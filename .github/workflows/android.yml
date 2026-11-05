@@ -30,7 +30,8 @@ jobs:
           node-version: '22'
       - name: Lockfile (resolved as the manifest asks)
         run: |
-          cargo generate-lockfile --manifest-path crates/fm1-android/Cargo.toml
+          cargo metadata --format-version 1 --manifest-path crates/fm1-android/Cargo.toml > /dev/null
+          git diff --stat -- crates/fm1-android/Cargo.lock
       - uses: actions/upload-artifact@v4
         with:
           name: fm1-android-lockfile
@@ -81,10 +82,10 @@ jobs:
         run: cargo install cargo-ndk --locked
       - name: libfm1_android.so (arm64-v8a for phones, x86_64 for the emulator)
         run: |
-          export ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME
+          export ANDROID_NDK_HOME=$ANDROID_NDK_ROOT   # the runner's LTS NDK
           echo "NDK: $ANDROID_NDK_HOME"
           cd crates/fm1-android
-          cargo ndk -t arm64-v8a -t x86_64 -P 26 -o ../../android/app/src/main/jniLibs build --release --lib
+          cargo ndk -t arm64-v8a -t x86_64 -P 26 -o ../../android/app/src/main/jniLibs build --release --locked --lib
           ls -lR ../../android/app/src/main/jniLibs
       - name: APK
         run: |

@@ -356,6 +356,12 @@ kept in the app's `settings.txt`. A touchscreen adds its own delay before Androi
 (typically 10-30 ms, the phone's); a USB keyboard's notes skip that. On a phone the emulator
 needs the JIT (AArch64, as on the desktop) to keep up with the 240 MHz of both cores: the bar
 shows `JIT ON`, `SPEED` stays at 1.00x when it keeps up (below it, the queue runs dry).
+Measured in CI: SLOOP runs at 2.56x real time with the JIT on an AArch64 Neoverse-N2 core (0.46x
+interpreted); its audio block is 256 frames (5.8 ms). The sound path a touch waits for is then
+about 6 ms of block, 6 ms of queue and the device's buffer (on a phone that grants MMAP, 2 bursts
+of 2-5 ms, plus a few ms of DAC): some 15-25 ms after Android delivers the touch. The Android
+emulator's audio is no guide (a 20 ms burst, shared, ~140 ms); those numbers come from a real
+phone only.
 
 **Build**: nothing to install: the workflow builds `crates/fm1-android` (a NativeActivity in
 Rust, `android-activity`) for arm64-v8a and x86_64 with `cargo-ndk`, the APK around it with
