@@ -1033,10 +1033,10 @@ options: [--mhz 240] [--syx BANK.syx] [--midi all|none|NAME] [--midi-ch N] [--fl
          [--buffer FRAMES]       the audio device's buffer, if it takes one
          [--exclusive]           Windows: the output in WASAPI exclusive mode, the device's shortest
                                  period (lowest latency; other programs can't play on it meanwhile)
+         [--flaky-core1 RATE [--seed N]] [--cpu1-survives] [--version] [--help]
 window: right-click a control, then move or press one of your controller's: MIDI learn (right-click
         again: cancel, Delete: unbind); F1 labels, F2 keys: panel / MIDI / auto, F3 record a WAV
         (to Music/fm1-emu), F4 open another firmware
-         [--flaky-core1 RATE [--seed N]] [--cpu1-survives] [--version] [--help]
 headless: --bench MS   run MS emulated ms as fast as it goes, report the speed
           --shot MS    run MS ms, then write the panel to work/panel.ppm
 env: FM1_BENCH_KEYS='T[-T2]:PLAY,T:n7,T:enc0:+3,T:pot:512,T:ms:mHEX'  scripted input (--bench, --shot;
