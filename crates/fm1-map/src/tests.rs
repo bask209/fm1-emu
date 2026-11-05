@@ -1,8 +1,39 @@
 use super::*;
 
+fn mpk_profile() -> Profile {
+    builtin().into_iter().find(|p| p.name == "Akai MPK mini 3").expect("the MPK profile parses")
+}
+
+/// The MPK profile with its keys on the panel and MIDI on the channels played.
 fn mpk() -> Mapper {
-    let p = builtin().into_iter().find(|p| p.name == "Akai MPK mini 3").expect("the MPK profile parses");
+    let mut p = mpk_profile();
+    p.keys_mode = KeysMode::Panel;
+    p.midi_ch = 0;
     Mapper::new(p)
+}
+
+#[test]
+fn mpk_keys_play_at_their_pitch_on_the_selected_track() {
+    // as shipped: auto, MIDI IN on channel 16 (SLOOP: the selected track)
+    let mut m = Mapper::new(mpk_profile());
+    assert_eq!(m.keys_mode(), KeysMode::Auto);
+    // a C major scale from C3 goes up, note for note, on channel 16
+    let v = run(&mut m, &[&[0x90, 48, 90], &[0x80, 48, 0], &[0x90, 52, 90], &[0x90, 53, 90], &[0xe0, 0, 80]]);
+    assert_eq!(v, vec![
+        Out::Midi { bytes: [0x9f, 48, 90], len: 3 },
+        Out::Midi { bytes: [0x8f, 48, 0], len: 3 },
+        Out::Midi { bytes: [0x9f, 52, 90], len: 3 },
+        Out::Midi { bytes: [0x9f, 53, 90], len: 3 },
+        Out::Midi { bytes: [0xef, 0, 80], len: 3 },
+    ]);
+    // a note held when the keys go to the panel is let go on channel 16 too
+    let mut v = Vec::new();
+    m.set_keys_mode(KeysMode::Panel, &mut |o| v.push(o));
+    assert!(v.contains(&Out::Midi { bytes: [0x8f, 52, 0], len: 3 }), "{v:?}");
+    // while a function pad (GLO, A8) is held, auto plays the panel's keys
+    let mut m = Mapper::new(mpk_profile());
+    let v = run(&mut m, &[&[0x99, 43, 100], &[0x90, 60, 100]]);
+    assert_eq!(v, vec![Out::Key { id: 7, down: true, vel: 0 }, Out::Key { id: KEY0 + 7, down: true, vel: 100 }]);
 }
 
 fn run(m: &mut Mapper, msgs: &[&[u8]]) -> Vec<Out> {

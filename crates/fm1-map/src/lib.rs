@@ -213,6 +213,10 @@ fn one() -> f32 {
 fn is_one(v: &f32) -> bool {
     *v == 1.0
 }
+fn is_zero(v: &u8) -> bool {
+    *v == 0
+}
+
 fn yes() -> bool {
     true
 }
@@ -304,6 +308,11 @@ pub struct Profile {
     pub pass_unmapped: bool,
     #[serde(default)]
     pub keys_mode: KeysMode,
+    /// The channel (1-16) what goes to MIDI IN is sent on, whatever channel the controller
+    /// plays; 0: as played. Firmwares such as SLOOP play the selected track on a channel no
+    /// track has (4-16), where channel 1 always plays track 1.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub midi_ch: u8,
     #[serde(default)]
     pub bindings: Vec<Binding>,
     /// Notes for people: how to set the controller up for it.
@@ -535,11 +544,21 @@ impl Mapper {
             }
         }
     }
+    /// A channel message's status byte on the profile's MIDI IN channel.
+    fn to_midi_ch(&self, st: u8) -> u8 {
+        match self.profile.midi_ch {
+            c @ 1..=16 if (0x80..0xf0).contains(&st) => (st & 0xf0) | (c - 1),
+            _ => st,
+        }
+    }
+
     fn release_keys(&mut self, out: &mut dyn FnMut(Out)) {
+        let off = self.to_midi_ch(0x80);
         for (ch, row) in self.held_note.iter_mut().enumerate() {
             for (note, k) in row.iter_mut().enumerate() {
                 if *k == TO_MIDI {
-                    out(Out::Midi { bytes: [0x80 | ch as u8, note as u8, 0], len: 3 });
+                    let st = if off == 0x80 { 0x80 | ch as u8 } else { off };
+                    out(Out::Midi { bytes: [st, note as u8, 0], len: 3 });
                 }
                 *k = NONE;
             }
@@ -570,7 +589,7 @@ impl Mapper {
         let (kind, ch) = (st & 0xf0, st & 0x0f);
         let d1 = msg[1] & 0x7f;
         let d2 = if len == 3 { msg[2] & 0x7f } else { 0 };
-        let bytes = [st, d1, d2];
+        let bytes = [self.to_midi_ch(st), d1, d2];
         let pass = Out::Midi { bytes, len: len as u8 };
         let note_on = kind == 0x90 && d2 > 0;
         let note_off = kind == 0x80 || (kind == 0x90 && d2 == 0);

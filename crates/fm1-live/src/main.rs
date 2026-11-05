@@ -64,6 +64,10 @@ const LEAD_MS: f64 = 60.0;
 /// much at each underrun, up to AUDIO_TARGET_MAX_MS: a played note waits about that long.
 const AUDIO_TARGET_STEP_MS: f64 = 4.0;
 const AUDIO_TARGET_MAX_MS: f64 = 80.0;
+/// After this long without an underrun the target comes back down by a step (no lower than
+/// --latency): a burst of underruns (the start, while the JIT compiles the firmware's code, or
+/// another program busy for a moment) no longer leaves the latency high for good.
+const AUDIO_TARGET_CALM: Duration = Duration::from_secs(20);
 
 struct Opts {
     bin: String,
@@ -101,6 +105,8 @@ struct Opts {
     buffer: Option<u32>,
     /// --exclusive (Windows): the output in WASAPI exclusive mode
     exclusive: bool,
+    /// --midi-log: each MIDI message from the inputs and what the controller profile made of it
+    midi_log: bool,
 }
 
 /// The firmware catalog web/firmwares.json as (id, name, version, package path): each package is
@@ -128,7 +134,7 @@ fn parse() -> Option<Opts> {
     let mut o = Opts { bin: "work/felucca_xip.bin".into(), entry: 0x0200_0120, mhz: 240, bench: None, shot: None,
                        name: "Felucca".into(), fwsc: None, syx: None, midi: "all".into(), midi_ch: 0,
                        flaky_core1: None, cpu1_survives: false, seed: None, flash: None, usb: false,
-                       map: "auto".into(), latency_ms: 12.0, buffer: None, exclusive: false };
+                       map: "auto".into(), latency_ms: 12.0, buffer: None, exclusive: false, midi_log: false };
     let mut i = 1;
     while i < a.len() {
         if a[i] == "--usb" {
@@ -138,6 +144,11 @@ fn parse() -> Option<Opts> {
         }
         if a[i] == "--exclusive" {
             o.exclusive = true;
+            i += 1;
+            continue;
+        }
+        if a[i] == "--midi-log" {
+            o.midi_log = true;
             i += 1;
             continue;
         }
@@ -1031,6 +1042,7 @@ options: [--mhz 240] [--syx BANK.syx] [--midi all|none|NAME] [--midi-ch N] [--fl
          [--map auto|none|NAME|FILE.json]  a MIDI controller as the panel (profiles: crates/fm1-map;
                                  yours in %APPDATA%\\fm1-emu\\controllers or ~/.config/fm1-emu/controllers)
          [--latency MS] (12)     audio queued ahead of the device; it grows by itself on underruns
+         [--midi-log]            print each MIDI message and what the profile made of it
          [--buffer FRAMES]       the audio device's buffer, if it takes one
          [--exclusive]           Windows: the output in WASAPI exclusive mode, the device's shortest
                                  period (lowest latency; other programs can't play on it meanwhile)
@@ -1165,7 +1177,9 @@ fn main() {
     if let Some(p) = &profile {
         eprintln!("controller: {} (F1 shows what is bound where; right-click a control to learn)", p.name);
     }
-    let control = Arc::new(ctl::Ctl::new(profile, o.midi_ch));
+    let mut control = ctl::Ctl::new(profile, o.midi_ch);
+    control.log = o.midi_log;
+    let control = Arc::new(control);
     let _midi = midi_inputs(&o, &tx, &control);
     let recorder: Arc<Mutex<Option<wav::Wav>>> = Arc::new(Mutex::new(None));
     let target_ms = Arc::new(AtomicU64::new(o.latency_ms.to_bits()));
@@ -1177,6 +1191,7 @@ fn main() {
         let (ring, lcd, leds, pads, status, quit) = (ring.clone(), lcd.clone(), leds.clone(), pads.clone(), status.clone(), quit.clone());
         let (recorder, target_ms) = (recorder.clone(), target_ms.clone());
         let flash = o.flash.clone();
+        let floor_ms = o.latency_ms;
         std::thread::spawn(move || {
             high_priority();
             let start = Instant::now();
@@ -1186,6 +1201,7 @@ fn main() {
             let (mut stat_emu, mut stat_wall) = (0u64, Instant::now());
             let mut usb_ports = UsbPorts::default();
             let mut underruns_seen = 0u64;
+            let mut calm_since = Instant::now();
             while !quit.load(Ordering::Relaxed) {
                 while let Ok(a) = rx.try_recv() {
                     m.soc.periph.apply(&a);
@@ -1204,10 +1220,15 @@ fn main() {
                 let mut target = f64::from_bits(target_ms.load(Ordering::Relaxed));
                 if u > underruns_seen {
                     underruns_seen = u;
+                    calm_since = Instant::now();
                     if target < AUDIO_TARGET_MAX_MS {
                         target = (target + AUDIO_TARGET_STEP_MS).min(AUDIO_TARGET_MAX_MS);
                         target_ms.store(target.to_bits(), Ordering::Relaxed);
                     }
+                } else if target > floor_ms && calm_since.elapsed() >= AUDIO_TARGET_CALM {
+                    calm_since = Instant::now();
+                    target = (target - AUDIO_TARGET_STEP_MS / 2.0).max(floor_ms);
+                    target_ms.store(target.to_bits(), Ordering::Relaxed);
                 }
                 let behind = if audio_ok && m.soc.periph.audio_halves > 0 {
                     buffered < target

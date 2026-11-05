@@ -38,6 +38,10 @@ A profile there replaces a built-in one of the same name.
   and velocity (firmwares that read MIDI IN only).
 - **auto**: MIDI IN, but the panel's keys while you hold a function button (FX … SEQ).
 
+The panel's 27 keys run F3 to G5, so a keyboard's notes outside that range move by octaves onto
+them in *panel keys*: on a 25-key C-to-C keyboard the lowest C to E sound an octave up, and a
+scale played from the bottom jumps. *MIDI IN* and *auto* play every note at its own pitch.
+
 ## Akai MPK mini 3 (factory settings, program 1)
 
 | MPK | FM-1 |
@@ -49,7 +53,7 @@ A profile there replaces a built-in one of the same name.
 | pads bank A, bottom row | PLAY, REC, SEQ, ARP |
 | pads bank B, top row | SCL, EDIT, SAVE, HOME |
 | pads bank B, bottom row | OCT−, OCT+, keys mode, record |
-| keys | the panel's keys |
+| keys | *auto*: MIDI IN at their own pitch, on channel 16 (SLOOP: the selected track); the panel's keys while a function pad is held |
 | joystick, sustain | the firmware's MIDI IN |
 
 The knobs are absolute out of the box, so a knob stops turning an encoder at its end. For endless
@@ -65,6 +69,7 @@ to `relative` in the profile (if they turn the wrong way or jump, try `relative-
   "device": "part of its MIDI input name",
   "pass_unmapped": true,
   "keys_mode": "panel",
+  "midi_ch": 16,
   "bindings": [
     { "src": { "ch": 1, "cc": 70 }, "to": "KNOB1", "mode": "relative", "label": "K1" },
     { "src": { "ch": 10, "note": 36 }, "to": "PLAY" },
@@ -87,4 +92,9 @@ to `relative` in the profile (if they turn the wrong way or jump, try `relative-
   an encoder `scale` clicks a press.
 - `scale`: encoder clicks per step. `base`: the note that plays the panel's F3 (53 = F3).
   `fold`: notes outside the panel move by octaves onto it. `label`: what the overlay shows.
+- `midi_ch`: the channel (1–16) everything sent to MIDI IN goes out on, whatever channel your
+  controller plays (left out: as played). SLOOP plays channels 1–3 on tracks 1–3 whatever is
+  selected, and a channel no track has (4–16) on the selected track: 16 makes your keys play
+  the track you select.
+- `fm1-live --midi-log` prints each message your controller sends and what it became.
 - The first binding that matches a message takes it; with `pass_unmapped`, the rest go to MIDI IN.
