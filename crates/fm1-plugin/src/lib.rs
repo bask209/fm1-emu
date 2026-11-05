@@ -16,7 +16,12 @@ use std::sync::{mpsc, Arc, Mutex};
 
 mod editor;
 pub mod engine;
+pub mod map;
 pub mod savefile;
+#[path = "../../fm1-live/src/labels.rs"]
+mod labels;
+#[path = "../../fm1-live/src/wav.rs"]
+pub mod wav;
 #[path = "../../fm1-live/src/panel.rs"]
 #[allow(dead_code)]
 mod panel;
@@ -50,6 +55,13 @@ pub struct Fm1Params {
     pub firmware: Mutex<Firmware>,
     #[persist = "flash"]
     pub flash: Mutex<Vec<Sector>>,
+    /// The MIDI controller profile (crates/fm1-map), with what was learned in it.
+    #[persist = "controller"]
+    pub controller: Mutex<map::Controller>,
+    /// What the machine's thread tells the window about the controller (not saved).
+    pub map: Mutex<map::MapView>,
+    /// A profile is on: the host's MIDI goes through it (the channel is moved after it).
+    pub map_on: std::sync::atomic::AtomicBool,
 
     /// The MASTER pot.
     #[id = "master"]
@@ -152,6 +164,9 @@ impl Default for Fm1Params {
             editor_state: EguiState::from_size(960, 660),
             firmware: Mutex::new(Firmware::default()),
             flash: Mutex::new(Vec::new()),
+            controller: Mutex::new(map::Controller::default()),
+            map: Mutex::new(map::MapView::default()),
+            map_on: std::sync::atomic::AtomicBool::new(false),
             master: FloatParam::new("Master", 900.0 / 1023.0, FloatRange::Linear { min: 0.0, max: 1.0 })
                 .with_unit(" %")
                 .with_value_to_string(formatters::v2s_f32_percentage(0))
@@ -322,6 +337,17 @@ impl Plugin for Fm1 {
         let fw = self.params.firmware.lock().unwrap().clone();
         let sectors = self.params.flash.lock().unwrap().clone();
         link.boot(&fw, &sectors);
+        // the project's controller, or for a project that never chose one the last choice
+        let profile = {
+            let mut c = self.params.controller.lock().unwrap();
+            if !c.chosen {
+                if let Some(last) = map::last_choice() {
+                    c.profile = last;
+                }
+            }
+            c.profile.clone()
+        };
+        let _ = link.cmds.send(Cmd::Map(profile));
         true
     }
 
@@ -344,7 +370,8 @@ impl Plugin for Fm1 {
             if len == 0 {
                 continue;
             }
-            if ch != 0 {
+            // (with a controller profile, the machine's thread moves what passes to the jack)
+            if ch != 0 && !self.params.map_on.load(std::sync::atomic::Ordering::Relaxed) {
                 b[0] = (b[0] & 0xf0) | (ch - 1);
             }
             let frame = start + (at as f64 * self.ratio) as u64 + self.lead as u64;

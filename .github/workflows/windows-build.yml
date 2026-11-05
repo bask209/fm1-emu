@@ -70,3 +70,49 @@ jobs:
         with:
           name: fm1-live-windows-x86_64
           path: dist/fm1-live-windows-x86_64
+
+  # The plugin (VST3 + CLAP) with the controller mapping, tested and validated as release.yml does.
+  plugin:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Firmware for engine tests
+        run: node tools/fetch_firmwares.mjs felucca
+
+      - name: Unit and engine tests
+        run: cargo test --manifest-path crates/fm1-plugin/Cargo.toml --release
+
+      - name: Build CLAP and VST3
+        shell: pwsh
+        env:
+          NO_INSTALL: '1'
+        run: tools/build_plugin.ps1
+
+      - name: Steinberg's VST3 validator
+        shell: pwsh
+        run: |
+          cmake -S target/plugin/build/cpm/vst3sdk -B target/plugin/vst3sdk-build -A x64 `
+            -DSMTG_ENABLE_VST3_PLUGIN_EXAMPLES=OFF -DSMTG_ENABLE_VSTGUI_SUPPORT=OFF -DSMTG_ENABLE_VST3_HOSTING_EXAMPLES=ON
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cmake --build target/plugin/vst3sdk-build --config Release --target validator
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $env:CLAP_PATH = "$PWD/target/plugin"
+          & target/plugin/vst3sdk-build/bin/Release/validator.exe target/plugin/FM-1.vst3
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist/fm1-plugin-windows-x86_64/controllers
+          cp -r target/plugin/FM-1.vst3 target/plugin/FM-1.clap dist/fm1-plugin-windows-x86_64/
+          cp crates/fm1-map/profiles/*.json dist/fm1-plugin-windows-x86_64/controllers/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fm1-plugin-windows-x86_64
+          path: dist/fm1-plugin-windows-x86_64

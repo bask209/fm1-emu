@@ -43,6 +43,8 @@ use panel::{Ctl, ENCS, H, W};
 #[path = "../../fm1-emu/src/buildinfo.rs"]
 mod buildinfo;
 mod ctl;
+mod labels;
+mod wav;
 mod panel;
 mod panel_smk;
 use std::collections::VecDeque;
@@ -983,10 +985,10 @@ fn midi_inputs(o: &Opts, tx: &mpsc::Sender<Action>, control: &Arc<ctl::Ctl>) -> 
         }
         let Ok(mut input) = midir::MidiInput::new("fm1-live") else { continue };
         input.ignore(midir::Ignore::None);
-        let (tx, ch, control) = (tx.clone(), o.midi_ch, control.clone());
+        let (tx, ch, mapping) = (tx.clone(), o.midi_ch, control.clone());
         let got = input.connect(&port, "fm1-live in", move |_, msg, _| {
-            if control.on && !msg.is_empty() && msg[0] != 0xf0 {
-                control.feed(msg, &tx);
+            if mapping.on && !msg.is_empty() && msg[0] != 0xf0 {
+                mapping.feed(msg, &tx);
                 return;
             }
             for (i, &b) in msg.iter().enumerate() {
@@ -1017,7 +1019,7 @@ const USAGE: &str = "usage: fm1-live --fwsc FIRMWARE.fwsc   (a firmware package:
        fm1-live --bin XIP.bin [--entry 0x02000120]
 options: [--mhz 240] [--syx BANK.syx] [--midi all|none|NAME] [--midi-ch N] [--flash FILE] [--usb]
          [--map auto|none|NAME|FILE.json]  a MIDI controller as the panel (profiles: crates/fm1-map;
-                                 yours in %APPDATA%\fm1-emu\controllers or ~/.config/fm1-emu/controllers)
+                                 yours in %APPDATA%\\fm1-emu\\controllers or ~/.config/fm1-emu/controllers)
          [--latency MS] (12)     audio queued ahead of the device; it grows by itself on underruns
          [--buffer FRAMES]       the audio device's buffer, if it takes one
 window: right-click a control, then move or press one of your controller's: MIDI learn (right-click
@@ -1133,7 +1135,7 @@ fn main() {
     }
     let control = Arc::new(ctl::Ctl::new(profile, o.midi_ch));
     let _midi = midi_inputs(&o, &tx, &control);
-    let recorder: Arc<Mutex<Option<ctl::Wav>>> = Arc::new(Mutex::new(None));
+    let recorder: Arc<Mutex<Option<wav::Wav>>> = Arc::new(Mutex::new(None));
     let target_ms = Arc::new(AtomicU64::new(o.latency_ms.to_bits()));
     let (usb_tx, usb_rx) = mpsc::channel::<Vec<u8>>();
     let usb_on = o.usb;
@@ -1498,8 +1500,7 @@ fn main() {
             panel::draw(&mut buf, &base, &st);
         }
         if labels && control.on {
-            let learning = control.mapper.lock().unwrap().learning();
-            ctl::draw_labels(&mut buf, &control, learning);
+            control.draw_labels(&mut buf);
         }
         if let Some(w) = recorder.lock().unwrap().as_ref() {
             panel::text(&mut buf, (W - 90) as f32, 12.0, &format!("REC {}", w.frames / 44_100), 2, 0xff5050);
@@ -1522,7 +1523,8 @@ fn main() {
     }
     quit.store(true, Ordering::Relaxed);
     let _ = emu.join();
-    if let Some(w) = recorder.lock().unwrap().take() {
+    let last = recorder.lock().unwrap().take();
+    if let Some(w) = last {
         if let Ok(p) = w.finish() {
             eprintln!("recorded {}", p.display());
         }
@@ -1530,14 +1532,14 @@ fn main() {
 }
 
 /// F3: start a WAV, or finish the one being written.
-fn toggle_record(rec: &Mutex<Option<ctl::Wav>>, name: &str, note: &mut String, note_at: &mut Instant) {
+fn toggle_record(rec: &Mutex<Option<wav::Wav>>, name: &str, note: &mut String, note_at: &mut Instant) {
     let mut r = rec.lock().unwrap();
     let msg = match r.take() {
         Some(w) => match w.finish() {
             Ok(p) => format!("recorded {}", p.display()),
             Err(e) => format!("recording: {e}"),
         },
-        None => match ctl::Wav::create(name) {
+        None => match wav::Wav::create(name) {
             Ok(w) => {
                 let m = format!("recording to {} (F3 stops)", w.path.display());
                 *r = Some(w);
