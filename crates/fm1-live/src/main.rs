@@ -45,6 +45,7 @@ mod buildinfo;
 mod ctl;
 #[cfg(windows)]
 mod exclusive;
+mod fit;
 mod labels;
 mod wav;
 mod panel;
@@ -1067,6 +1068,7 @@ env: FM1_BENCH_KEYS='T[-T2]:PLAY,T:n7,T:enc0:+3,T:pot:512,T:ms:mHEX'  scripted i
                            FROM to TO ms, into PATH (with FM1_STRICT: where the cycles go)";
 
 fn main() {
+    fit::dpi_aware();
     if std::env::args().any(|a| a == "--version" || a == "-V") {
         println!("{}", buildinfo::version("fm1-live"));
         if let Some(w) = buildinfo::stale() {
@@ -1273,7 +1275,9 @@ fn main() {
         let _ = emu.join();
         return;
     }
-    let mut win = match Window::new(&format!("FM-1 · {} (emulated)", o.name), W, H, WindowOptions::default()) {
+    let ((ww, wh), at) = fit::start(W, H, None);
+    let opts = WindowOptions { resize: true, scale_mode: minifb::ScaleMode::UpperLeft, ..WindowOptions::default() };
+    let mut win = match Window::new(&format!("FM-1 · {} (emulated)", o.name), ww, wh, opts) {
         Ok(w) => w,
         Err(e) => {
             eprintln!("window: {e}");
@@ -1283,6 +1287,10 @@ fn main() {
         }
     };
     win.set_target_fps(60);
+    if let Some((x, y)) = at {
+        win.set_position(x, y);
+    }
+    let mut fit = fit::Fit::new(W, H);
     let base = panel::base();
     let mut buf = vec![0u32; W * H];
     let mut down = [false; 41];
@@ -1316,7 +1324,7 @@ fn main() {
         };
 
         // ---- mouse
-        let pos = win.get_mouse_pos(MouseMode::Clamp);
+        let pos = win.get_mouse_pos(MouseMode::Clamp).map(|(x, y)| fit.to_panel(x, y));
         let pressed = win.get_mouse_down(MouseButton::Left);
         if let Some((mx, my)) = pos {
             if pressed && !was_pressed {
@@ -1535,7 +1543,9 @@ fn main() {
         if let Some(w) = recorder.lock().unwrap().as_ref() {
             panel::text(&mut buf, (W - 90) as f32, 12.0, &format!("REC {}", w.frames / 44_100), 2, 0xff5050);
         }
-        if win.update_with_buffer(&buf, W, H).is_err() {
+        let (ww, wh) = win.get_size();
+        let (frame, fw, fh) = fit.frame(&buf, ww, wh);
+        if win.update_with_buffer(frame, fw, fh).is_err() {
             break;
         }
         if last_title.elapsed() >= Duration::from_millis(500) {
