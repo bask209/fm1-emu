@@ -25,14 +25,61 @@ pub struct View {
     pub enc: [i32; 7],
     pub pot: Option<u16>,
     pub events: Vec<Ui>,
-    /// notes held that went to MIDI IN, by the panel key that shows them (by octaves onto
-    /// F3..G5): keys played over MIDI light the panel's keys too
-    pub midi_notes: [u8; 27],
+    /// notes held that went to MIDI IN (how many presses of each), shown on the panel's keys
+    pub midi_held: [u8; 128],
+    /// the notes played over MIDI in the last few seconds, and the octaves the panel shows them
+    /// moved by so that they all fit on its F3..G5 in order (a scale from C3 lights C4, D4, E4,
+    /// F4…, not C4, D4, E4 and then F3)
+    recent: Vec<(u8, std::time::Instant)>,
+    shift: i32,
+}
+
+/// How long a note played counts for where the panel shows the notes.
+const RECENT: std::time::Duration = std::time::Duration::from_secs(4);
+const PANEL_LO: i32 = 53; // F3
+const PANEL_HI: i32 = 79; // G5
+
+impl View {
+    fn note_played(&mut self, note: u8) {
+        let now = std::time::Instant::now();
+        self.recent.retain(|&(_, t)| now.duration_since(t) < RECENT);
+        self.recent.push((note, now));
+        let held = (0..128u8).filter(|&n| self.midi_held[n as usize] > 0);
+        let notes: Vec<i32> = self.recent.iter().map(|&(n, _)| n as i32).chain(held.map(|n| n as i32)).collect();
+        let (lo, hi) = (*notes.iter().min().unwrap(), *notes.iter().max().unwrap());
+        let fits = |s: i32| lo + s >= PANEL_LO && hi + s <= PANEL_HI;
+        if !fits(self.shift) {
+            // the octave shift nearest no shift that fits them all, else the one that fits the
+            // note just played and the lowest
+            self.shift = [0, 12, -12, 24, -24, 36, -36]
+                .into_iter()
+                .find(|&s| fits(s))
+                .unwrap_or_else(|| (0..=7).map(|k| (k - 3) * 12).find(|&s| lo + s >= PANEL_LO).unwrap_or(0));
+        }
+    }
+
+    /// The panel key (0..27) a held MIDI note lights now.
+    pub fn midi_keys(&self) -> [bool; 27] {
+        let mut k = [false; 27];
+        for n in 0..128i32 {
+            if self.midi_held[n as usize] > 0 {
+                let mut i = n + self.shift - PANEL_LO;
+                while i < 0 {
+                    i += 12;
+                }
+                while i >= 27 {
+                    i -= 12;
+                }
+                k[i as usize] = true;
+            }
+        }
+        k
+    }
 }
 
 impl Default for View {
     fn default() -> Self {
-        View { down: [false; 41], enc: [0; 7], pot: None, events: Vec::new(), midi_notes: [0; 27] }
+        View { down: [false; 41], enc: [0; 7], pot: None, events: Vec::new(), midi_held: [0; 128], recent: Vec::new(), shift: 0 }
     }
 }
 
@@ -120,17 +167,14 @@ pub fn apply(o: Out, tx: &mpsc::Sender<Action>, v: &mut View, midi_ch: u8) {
             }
         }
         Out::Midi { mut bytes, len } => {
-            let (kind, note, vel) = (bytes[0] & 0xf0, bytes[1] as i32, bytes[2]);
+            let (kind, note, vel) = (bytes[0] & 0xf0, bytes[1] & 0x7f, bytes[2]);
             if len == 3 && (kind == 0x90 || kind == 0x80) {
-                let mut k = note - 53; // F3, the panel's first key
-                while k < 0 {
-                    k += 12;
+                if kind == 0x90 && vel > 0 {
+                    v.note_played(note);
+                    v.midi_held[note as usize] = v.midi_held[note as usize].saturating_add(1);
+                } else {
+                    v.midi_held[note as usize] = v.midi_held[note as usize].saturating_sub(1);
                 }
-                while k >= 27 {
-                    k -= 12;
-                }
-                let c = &mut v.midi_notes[k as usize];
-                *c = if kind == 0x90 && vel > 0 { c.saturating_add(1) } else { c.saturating_sub(1) };
             }
             if midi_ch != 0 && (0x80..0xf0).contains(&bytes[0]) {
                 bytes[0] = (bytes[0] & 0xf0) | (midi_ch - 1);
