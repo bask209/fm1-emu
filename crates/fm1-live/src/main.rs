@@ -1446,11 +1446,7 @@ fn main() {
         let midi_down;
         {
             let mut v = control.view.lock().unwrap();
-            let mut d = v.down;
-            for (i, &n) in v.midi_notes.iter().enumerate() {
-                d[fm1_map::KEY0 as usize + i] |= n > 0; // (played over MIDI: shown on the panel too)
-            }
-            midi_down = d;
+            midi_down = v.down;
             for i in 0..7 {
                 if v.enc[i] != 0 {
                     enc_clicks[i] += v.enc[i];
