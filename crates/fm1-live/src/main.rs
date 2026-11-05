@@ -1447,8 +1447,8 @@ fn main() {
         {
             let mut v = control.view.lock().unwrap();
             let mut d = v.down;
-            for (i, on) in v.midi_keys().into_iter().enumerate() {
-                d[fm1_map::KEY0 as usize + i] |= on; // (played over MIDI: shown on the panel too)
+            for (i, &n) in v.midi_notes.iter().enumerate() {
+                d[fm1_map::KEY0 as usize + i] |= n > 0; // (played over MIDI: shown on the panel too)
             }
             midi_down = d;
             for i in 0..7 {
