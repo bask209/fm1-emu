@@ -25,11 +25,14 @@ pub struct View {
     pub enc: [i32; 7],
     pub pot: Option<u16>,
     pub events: Vec<Ui>,
+    /// notes held that went to MIDI IN, by the panel key that shows them (by octaves onto
+    /// F3..G5): keys played over MIDI light the panel's keys too
+    pub midi_notes: [u8; 27],
 }
 
 impl Default for View {
     fn default() -> Self {
-        View { down: [false; 41], enc: [0; 7], pot: None, events: Vec::new() }
+        View { down: [false; 41], enc: [0; 7], pot: None, events: Vec::new(), midi_notes: [0; 27] }
     }
 }
 
@@ -117,6 +120,18 @@ pub fn apply(o: Out, tx: &mpsc::Sender<Action>, v: &mut View, midi_ch: u8) {
             }
         }
         Out::Midi { mut bytes, len } => {
+            let (kind, note, vel) = (bytes[0] & 0xf0, bytes[1] as i32, bytes[2]);
+            if len == 3 && (kind == 0x90 || kind == 0x80) {
+                let mut k = note - 53; // F3, the panel's first key
+                while k < 0 {
+                    k += 12;
+                }
+                while k >= 27 {
+                    k -= 12;
+                }
+                let c = &mut v.midi_notes[k as usize];
+                *c = if kind == 0x90 && vel > 0 { c.saturating_add(1) } else { c.saturating_sub(1) };
+            }
             if midi_ch != 0 && (0x80..0xf0).contains(&bytes[0]) {
                 bytes[0] = (bytes[0] & 0xf0) | (midi_ch - 1);
             }
