@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- the launcher icon: the FM-1's screen over three pill keys, one lit -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#0E0E10" android:pathData="M34,28h40a4,4 0,0 1,4 4v22a4,4 0,0 1,-4 4h-40a4,4 0,0 1,-4 -4v-22a4,4 0,0 1,4 -4z" />
+    <path android:fillColor="#62D36E" android:pathData="M40,46l6,-8l6,6l6,-10l6,12l4,-4v4h-28z" />
+    <path android:fillColor="#6A5557" android:pathData="M36,64h8a4,4 0,0 1,4 4v8a4,4 0,0 1,-4 4h-8a4,4 0,0 1,-4 -4v-8a4,4 0,0 1,4 -4z" />
+    <path android:fillColor="#F2A33A" android:pathData="M50,64h8a4,4 0,0 1,4 4v8a4,4 0,0 1,-4 4h-8a4,4 0,0 1,-4 -4v-8a4,4 0,0 1,4 -4z" />
+    <path android:fillColor="#6A5557" android:pathData="M64,64h8a4,4 0,0 1,4 4v8a4,4 0,0 1,-4 4h-8a4,4 0,0 1,-4 -4v-8a4,4 0,0 1,4 -4z" />
+</vector>

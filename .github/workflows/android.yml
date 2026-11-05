@@ -1,0 +1,134 @@
+# Android: the app (crates/fm1-android in the APK of android/), built into a debug-signed APK,
+# tested in the Android emulator with SLOOP (boot, touches, the audio stream), and the same
+# emulation benchmarked natively on an AArch64 runner (the phone's JIT, on Linux). Nothing is
+# installed on anyone's computer: the APK is this run's artifact.
+
+name: Android
+
+on:
+  push:
+    branches: ['android-app', 'android/**']
+  pull_request:
+    paths:
+      - 'crates/fm1-android/**'
+      - 'android/**'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # tests and the speed on AArch64 (the JIT the phone runs, here on Linux)
+  bench-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Lockfile (resolved as the manifest asks)
+        run: |
+          cargo generate-lockfile --manifest-path crates/fm1-android/Cargo.toml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fm1-android-lockfile
+          path: crates/fm1-android/Cargo.lock
+      - name: Tests
+        run: cargo test --release --manifest-path crates/fm1-android/Cargo.toml
+      - name: SLOOP
+        run: node tools/fetch_firmwares.mjs sloop
+      - name: Speed (JIT, then the interpreter)
+        run: |
+          mkdir -p work
+          b=crates/fm1-android/target/release/fm1-bench
+          cargo build --release --manifest-path crates/fm1-android/Cargo.toml --bin fm1-bench
+          lscpu | grep -E 'Model name|^CPU\(s\)' || true
+          $b reference/firmwares/sloop.fwsc 8000 --panel work/android-panel.ppm | tee work/bench.txt
+          $b reference/firmwares/sloop.fwsc 4000 --no-jit | tee -a work/bench.txt
+          python3 -c "
+          import sys
+          d=open('work/android-panel.ppm','rb').read().split(b'\n',3)
+          w,h=map(int,d[1].split()); px=d[3]
+          import zlib,struct
+          raw=b''.join(b'\0'+px[y*w*3:(y+1)*w*3] for y in range(h))
+          def chunk(t,b): return struct.pack('>I',len(b))+t+b+struct.pack('>I',zlib.crc32(t+b)&0xffffffff)
+          open('work/android-panel.png','wb').write(b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',w,h,8,2,0,0,0))+chunk(b'IDAT',zlib.compress(raw,6))+chunk(b'IEND',b''))
+          "
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-arm64
+          path: |
+            work/bench.txt
+            work/android-panel.png
+
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - name: cargo-ndk
+        run: cargo install cargo-ndk --locked
+      - name: libfm1_android.so (arm64-v8a: phones; x86_64: the emulator)
+        run: |
+          export ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME
+          echo "NDK: $ANDROID_NDK_HOME"
+          cd crates/fm1-android
+          cargo ndk -t arm64-v8a -t x86_64 -P 26 -o ../../android/app/src/main/jniLibs build --release --lib
+          ls -lR ../../android/app/src/main/jniLibs
+      - name: APK
+        run: |
+          gradle -p android assembleDebug --no-daemon
+          cp android/app/build/outputs/apk/debug/app-debug.apk fm1-emu-android.apk
+          ls -l fm1-emu-android.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fm1-emu-android-apk
+          path: fm1-emu-android.apk
+
+  # the APK in the emulator (x86_64, KVM): SLOOP boots, keys and PLAY touched, the log and screenshots kept
+  emulator:
+    needs: apk
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        with:
+          name: fm1-emu-android-apk
+      - name: SLOOP
+        run: node tools/fetch_firmwares.mjs sloop
+      - name: KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: In the emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          cores: 4
+          ram-size: 4096M
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -no-boot-anim -camera-back none
+          script: bash android/ci/emulator-test.sh fm1-emu-android.apk reference/firmwares/sloop.fwsc work/emulator
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: emulator-test
+          path: work/emulator

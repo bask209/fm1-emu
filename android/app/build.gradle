@@ -1,0 +1,38 @@
+// The APK around libfm1_android.so: cargo-ndk builds it into src/main/jniLibs first
+// (.github/workflows/android.yml; README "Android").
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'io.github.bask209.fm1emu'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'io.github.bask209.fm1emu'
+        minSdk 26          // AAudio
+        targetSdk 34
+        versionCode 1
+        versionName '0.4.0'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            // (signed with the debug key: an APK to install, not one for a store)
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    packaging {
+        jniLibs {
+            // stored uncompressed and page-aligned: loaded straight from the APK
+            useLegacyPackaging false
+        }
+    }
+}

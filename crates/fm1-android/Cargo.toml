@@ -1,0 +1,36 @@
+[package]
+name = "fm1-android"
+description = "The FM-1 emulator as an Android app: the panel on the touchscreen, AAudio out, USB MIDI in"
+version = "0.4.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "fm1_android"
+# cdylib: libfm1_android.so, the NativeActivity's code (android/); rlib: for fm1-bench and the tests
+crate-type = ["cdylib", "rlib"]
+
+# headless: boot a firmware and report the speed (CI runs it on an AArch64 runner and in the
+# Android emulator)
+[[bin]]
+name = "fm1-bench"
+path = "src/bin/fm1-bench.rs"
+
+[dependencies]
+fm1-core = { path = "../fm1-core" }
+fm1-soc = { path = "../fm1-soc" }
+fm1-map = { path = "../fm1-map" }
+log = "0.4"
+
+[target.'cfg(target_os = "android")'.dependencies]
+android-activity = { version = "0.6", features = ["native-activity"] }
+android_logger = { version = "0.14", default-features = false }
+jni = "0.21"
+
+# Its own workspace: Android's dependencies stay out of the emulator's builds and CI.
+[workspace]
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
