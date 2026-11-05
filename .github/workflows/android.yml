@@ -79,7 +79,7 @@ jobs:
           targets: aarch64-linux-android,x86_64-linux-android
       - name: cargo-ndk
         run: cargo install cargo-ndk --locked
-      - name: libfm1_android.so (arm64-v8a: phones; x86_64: the emulator)
+      - name: libfm1_android.so (arm64-v8a for phones, x86_64 for the emulator)
         run: |
           export ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME
           echo "NDK: $ANDROID_NDK_HOME"
