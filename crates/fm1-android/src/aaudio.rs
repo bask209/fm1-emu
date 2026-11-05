@@ -164,6 +164,9 @@ impl Output {
     }
 
     pub fn start(&mut self) -> Result<(), String> {
+        if self.started {
+            return Ok(());
+        }
         // SAFETY: an open stream
         let r = unsafe { AAudioStream_requestStart(self.s) };
         if r != 0 {

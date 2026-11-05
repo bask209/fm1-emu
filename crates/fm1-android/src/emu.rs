@@ -226,7 +226,9 @@ pub fn run_thread(mut m: Machine, sh: Arc<Shared>, rx: mpsc::Receiver<Action>, f
                 s.audio_frames = frames;
             }
             if e / 2000 != stat_emu / 2000 {
-                log::info!("[{:5.1} s] {speed:.2}x real time, audio peak {peak}, queued {buffered:.1} ms (target {target:.0}), {u} underruns",
+                // (the firmware's audio block: what it fills while the other half plays)
+                let block = frames / m.soc.periph.audio_halves.max(1);
+                log::info!("[{:5.1} s] {speed:.2}x real time, audio peak {peak}, block {block} frames, queued {buffered:.1} ms (target {target:.0}), {u} underruns",
                            e as f64 / 1000.0);
             }
             peak = 0;

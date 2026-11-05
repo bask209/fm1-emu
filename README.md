@@ -308,6 +308,63 @@ their time). `fm1-live --shot` then reports the LCD's share of the run.
 The page builds with `web/build.sh` (Rust to WebAssembly; needs the `wasm32-unknown-unknown`
 target), the whole site with `tools/build_site.sh`.
 
+## On Android
+
+`fm1-emu-android.apk` (from the `fm1-emu-android-apk` artifact of the
+[Android workflow](.github/workflows/android.yml), a zip with the APK inside) is a native app:
+the panel on the touchscreen, the sound through AAudio, a USB MIDI keyboard as the panel. It
+needs Android 8 (API 26) or newer and a 64-bit ARM phone or tablet; it is signed with a debug key.
+
+**Install**: copy the APK to the phone (or download the artifact on it), open it, and allow
+installing from that app when Android asks ("Install unknown apps"). Or, with USB debugging on:
+`adb install fm1-emu-android.apk`. Updating needs no uninstall while it is signed with the
+same key; a build from another fork's CI is signed with another one (uninstall first).
+
+**Play**: the first start opens the file picker: pick a `.fwsc` firmware package (SLOOP:
+[sloop-2.8.5.fwsc](https://thefirmwarehub.com/fw/sloop-2.8.5.fwsc); download it on the phone
+first). It boots that firmware from then on; **OPEN** in the bar, or a one-second hold on the
+screen, picks another (its flash starts empty, as after a fresh install). Every finger is a
+pointer: keys (lower on a key is harder; slide across keys for a glissando, along one for
+aftertouch), buttons, and the knobs, turned by dragging up or right (clockwise) and down or left.
+MASTER is the volume. A USB MIDI keyboard (an OTG adapter) plays as the desktop's does, through
+[crates/fm1-map](crates/fm1-map): the Akai MPK mini 3 with its own profile, anything else the
+generic one. The flash (a firmware's saved presets and songs) is kept when the app goes to the
+background. The landscape panel is the desktop's (1280 x 820), scaled to the screen's height,
+with the bar in the margin.
+
+**Latency**: from a touch to the sound it is the firmware's own audio block (a few ms), the
+emulator's queue and the device's buffer. The app asks AAudio for its low-latency path in
+exclusive (MMAP) mode at the device's own rate (where a phone grants it the app writes into the
+DSP's buffer: no mixer), with a buffer of a few bursts (a burst: 2-5 ms on most phones). Both
+grow by themselves: a burst more at each xrun of the device, 2 ms more of queue at each underrun
+of the emulator; and come back down after 15 calm seconds. The bar shows them live:
+
+| line | what |
+|---|---|
+| `OUT` | what a note played now waits for: the queue plus the device's latency (from AAudio's timestamps) |
+| `QUEUE q/t` | ms of sound queued by the emulator / its current target |
+| `DEVICE` | the device's output latency |
+| `BUF nXb rate` | the device buffer: n bursts of b frames, at its rate |
+| `EXCLUSIVE` / `SHARED`, `FAST` / `SLOW` | the stream AAudio granted (`SLOW`: not the low-latency path) |
+| `XRUN x UNDER u` | the device's xruns, the emulator's underruns |
+| `FLOOR f MS nB` | the settings: the queue's floor and the buffer's, in bursts |
+
+**LAT -** / **LAT +** set the queue floor (6 ms to start; 1-60), **BUF -** / **BUF +** the
+device buffer's floor (2 bursts; 1-16). Lower is sooner but crackles if the phone can't keep up:
+lower them while it plays cleanly, and raise them if `UNDER` or `XRUN` keep counting. They are
+kept in the app's `settings.txt`. A touchscreen adds its own delay before Android sees the touch
+(typically 10-30 ms, the phone's); a USB keyboard's notes skip that. On a phone the emulator
+needs the JIT (AArch64, as on the desktop) to keep up with the 240 MHz of both cores: the bar
+shows `JIT ON`, `SPEED` stays at 1.00x when it keeps up (below it, the queue runs dry).
+
+**Build**: nothing to install: the workflow builds `crates/fm1-android` (a NativeActivity in
+Rust, `android-activity`) for arm64-v8a and x86_64 with `cargo-ndk`, the APK around it with
+Gradle (`android/`: the activity's Java for the file picker and MIDI), tests it in the Android
+emulator with SLOOP (screenshots and the log are the `emulator-test` artifact) and measures the
+emulation's speed on an AArch64 runner (`bench-arm64`). Locally, with the NDK and the
+`aarch64-linux-android` target: `cd crates/fm1-android && cargo ndk -t arm64-v8a -P 26 -o
+../../android/app/src/main/jniLibs build --release --lib`, then `gradle -p android assembleDebug`.
+
 ## In your DAW: AU and VST3
 
 The emulator also comes as an **instrument plugin**, so a firmware plays in a DAW like any

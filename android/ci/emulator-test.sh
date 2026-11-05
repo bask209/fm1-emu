@@ -19,6 +19,8 @@ adb shell "run-as $PKG cp /data/local/tmp/fw.fwsc files/firmware.fwsc" \
   || adb exec-in "run-as $PKG sh -c 'cat > files/firmware.fwsc'" < "$FW"
 adb shell "run-as $PKG sh -c 'echo SLOOP > files/firmware.name; ls -l files'"
 
+# (no "Viewing full screen" hint over the panel)
+adb shell settings put secure immersive_mode_confirmations confirmed
 adb shell am start -W -n $PKG/.MainActivity
 sleep 45
 adb exec-out screencap -p > "$OUT/1-booted.png"
