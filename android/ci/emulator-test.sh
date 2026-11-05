@@ -29,10 +29,14 @@ adb logcat -d -s fm1:V > "$OUT/logcat-boot.txt"
 # where the panel's keys are on the screen: from the app's "window W x H: canvas CW x CH (panel at OX, OY)"
 read -r WW WH CW CH OX OY < <(grep -o 'window [0-9]* x [0-9]*: canvas [0-9]* x [0-9]* (panel at [0-9]*, [0-9]*)' "$OUT/logcat-boot.txt" \
   | tail -1 | sed -E 's/[^0-9]+/ /g')
-echo "window ${WW}x${WH}, canvas ${CW}x${CH}, panel at $OX,$OY"
+# input takes screen coordinates; the window is the screen less the display cutout, on the left
+# in landscape (the camera's edge of the portrait screen)
+SW=$(adb shell wm size | grep -o '[0-9]*x[0-9]*' | tail -1 | tr x ' ' | awk '{ print ($1 > $2) ? $1 : $2 }')
+DX=$((SW - WW))
+echo "screen $SW wide, window ${WW}x${WH} at x $DX, canvas ${CW}x${CH}, panel at $OX,$OY"
 at() { # panel x y -> screen x y
-  awk -v px="$1" -v py="$2" -v ww="$WW" -v cw="$CW" -v ox="$OX" -v oy="$OY" \
-    'BEGIN { s = ww / cw; printf "%d %d", (ox + px) * s, (oy + py) * s }'
+  awk -v px="$1" -v py="$2" -v ww="$WW" -v cw="$CW" -v ox="$OX" -v oy="$OY" -v dx="$DX" \
+    'BEGIN { s = ww / cw; printf "%d %d", dx + (ox + px) * s, (oy + py) * s }'
 }
 # C4 (matrix key 21: the fifth white key, low on the key = hard), held 2 s; a screenshot while held
 read -r KX KY < <(at 384 770)
