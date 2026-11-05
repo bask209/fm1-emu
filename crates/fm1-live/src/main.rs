@@ -42,6 +42,7 @@ use panel::{Ctl, ENCS, H, W};
 
 #[path = "../../fm1-emu/src/buildinfo.rs"]
 mod buildinfo;
+mod ctl;
 mod panel;
 mod panel_smk;
 use std::collections::VecDeque;
@@ -53,9 +54,11 @@ const RAM_BASE: u32 = 0x01c0_0000;
 const RAM_SIZE: usize = 1 << 20;
 /// How far emulated time runs ahead of the wall clock before audio starts.
 const LEAD_MS: f64 = 60.0;
-/// Once the firmware streams audio, the emulator runs whenever less than
-/// this much sound is queued: the audio device sets the pace.
-const AUDIO_TARGET_MS: f64 = 50.0;
+/// Once the firmware streams audio, the emulator runs whenever less than the target of sound
+/// is queued: the audio device sets the pace. The target starts at --latency and grows by this
+/// much at each underrun, up to AUDIO_TARGET_MAX_MS: a played note waits about that long.
+const AUDIO_TARGET_STEP_MS: f64 = 4.0;
+const AUDIO_TARGET_MAX_MS: f64 = 80.0;
 
 struct Opts {
     bin: String,
@@ -85,6 +88,12 @@ struct Opts {
     flash: Option<String>,
     /// --usb: a USB cable to this computer (a host; USB-MIDI as a virtual MIDI device)
     usb: bool,
+    /// --map: the controller profile (crates/fm1-map): auto, none, a profile's name or a .json
+    map: String,
+    /// --latency MS: the audio queued ahead of the device to start with (it grows on underruns)
+    latency_ms: f64,
+    /// --buffer FRAMES: ask the audio device for this buffer size
+    buffer: Option<u32>,
 }
 
 /// The firmware catalog web/firmwares.json as (id, name, version, package path): each package is
@@ -111,7 +120,8 @@ fn parse() -> Option<Opts> {
     let a: Vec<String> = std::env::args().collect();
     let mut o = Opts { bin: "work/felucca_xip.bin".into(), entry: 0x0200_0120, mhz: 240, bench: None, shot: None,
                        name: "Felucca".into(), fwsc: None, syx: None, midi: "all".into(), midi_ch: 0,
-                       flaky_core1: None, cpu1_survives: false, seed: None, flash: None, usb: false };
+                       flaky_core1: None, cpu1_survives: false, seed: None, flash: None, usb: false,
+                       map: "auto".into(), latency_ms: 12.0, buffer: None };
     let mut i = 1;
     while i < a.len() {
         if a[i] == "--usb" {
@@ -156,6 +166,9 @@ fn parse() -> Option<Opts> {
             "--seed" => o.seed = Some(a.get(i + 1)?.parse().ok()?),
             "--cpu1-survives" => { o.cpu1_survives = true; i -= 1; }
             "--flash" => o.flash = Some(a.get(i + 1)?.clone()),
+            "--map" => o.map = a.get(i + 1)?.clone(),
+            "--latency" => o.latency_ms = a.get(i + 1)?.parse::<f64>().ok().filter(|v| (1.0..=500.0).contains(v))?,
+            "--buffer" => o.buffer = Some(a.get(i + 1)?.parse().ok().filter(|v| (16..=8192).contains(v))?),
             _ => return None,
         }
         i += 2;
@@ -291,6 +304,24 @@ impl Machine {
 /// Ask for a performance core: macOS runs default-QoS background threads on
 /// the efficiency cores, which made the emulator ~40% slower than on main.
 fn high_priority() {
+    #[cfg(windows)]
+    {
+        // the emulation thread above normal, and 1 ms timer ticks for its short sleeps
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetCurrentThread() -> isize;
+            fn SetThreadPriority(thread: isize, priority: i32) -> i32;
+        }
+        #[link(name = "winmm")]
+        extern "system" {
+            fn timeBeginPeriod(ms: u32) -> u32;
+        }
+        const THREAD_PRIORITY_HIGHEST: i32 = 2;
+        unsafe {
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+            timeBeginPeriod(1);
+        }
+    }
     #[cfg(target_os = "macos")]
     {
         extern "C" {
@@ -449,52 +480,76 @@ struct AudioRing {
     underruns: AtomicU64,
 }
 
-fn start_audio(ring: Arc<AudioRing>) -> Result<cpal::Stream, String> {
+fn start_audio(ring: Arc<AudioRing>, buffer: Option<u32>) -> Result<cpal::Stream, String> {
     let host = cpal::default_host();
     let dev = host.default_output_device().ok_or("no audio output device")?;
     let cfg = dev.default_output_config().map_err(|e| e.to_string())?;
     if cfg.sample_format() != cpal::SampleFormat::F32 {
         return Err(format!("output format {:?} not handled (f32 only)", cfg.sample_format()));
     }
-    let channels = cfg.channels() as usize;
-    let rate = cfg.sample_rate().0 as f64;
-    let step = 44_100.0 / rate; // source frames per output frame
-    let (mut pos, mut cur, mut next) = (0.0f64, (0.0f32, 0.0f32), (0.0f32, 0.0f32));
-    let stream = dev
-        .build_output_stream(
-            &cfg.config(),
-            move |out: &mut [f32], _| {
-                let mut q = ring.q.lock().unwrap();
-                let mut starved = false;
-                for frame in out.chunks_mut(channels) {
-                    pos += step;
-                    while pos >= 1.0 {
-                        pos -= 1.0;
-                        cur = next;
-                        next = match (q.pop_front(), q.pop_front()) {
-                            (Some(l), Some(r)) => (l as f32 / 32768.0, r as f32 / 32768.0),
-                            _ => {
-                                starved = true;
-                                (0.0, 0.0)
-                            }
-                        };
-                    }
-                    let f = pos as f32;
-                    let (l, r) = (cur.0 + (next.0 - cur.0) * f, cur.1 + (next.1 - cur.1) * f);
-                    for (c, s) in frame.iter_mut().enumerate() {
-                        *s = if c % 2 == 0 { l } else { r };
-                    }
-                }
-                if starved && ring.started.load(Ordering::Relaxed) {
-                    ring.underruns.fetch_add(1, Ordering::Relaxed);
-                }
-            },
-            |e| eprintln!("audio: {e}"),
-            None,
-        )
-        .map_err(|e| e.to_string())?;
+    let mut config = cfg.config();
+    if let Some(n) = buffer {
+        let ok = match cfg.buffer_size() {
+            cpal::SupportedBufferSize::Range { min, max } => (*min..=*max).contains(&n),
+            cpal::SupportedBufferSize::Unknown => true,
+        };
+        if ok {
+            config.buffer_size = cpal::BufferSize::Fixed(n);
+        } else {
+            eprintln!("audio: the device does not take a {n}-frame buffer ({:?}); its own it is", cfg.buffer_size());
+        }
+    }
+    let stream = match output_stream(&dev, &config, ring.clone()) {
+        Ok(s) => s,
+        Err(e) if config.buffer_size != cpal::BufferSize::Default => {
+            eprintln!("audio: a {:?} buffer: {e}; the device's own it is", config.buffer_size);
+            config.buffer_size = cpal::BufferSize::Default;
+            output_stream(&dev, &config, ring)?
+        }
+        Err(e) => return Err(e),
+    };
+    eprintln!("audio: {} at {} Hz, {} channels, buffer {:?}", dev.name().unwrap_or_default(), config.sample_rate.0, config.channels, config.buffer_size);
     stream.play().map_err(|e| e.to_string())?;
     Ok(stream)
+}
+
+/// The output stream: the ring's 44.1 kHz frames, resampled to the device's rate.
+fn output_stream(dev: &cpal::Device, config: &cpal::StreamConfig, ring: Arc<AudioRing>) -> Result<cpal::Stream, String> {
+    let channels = config.channels as usize;
+    let step = 44_100.0 / config.sample_rate.0 as f64; // source frames per output frame
+    let (mut pos, mut cur, mut next) = (0.0f64, (0.0f32, 0.0f32), (0.0f32, 0.0f32));
+    dev.build_output_stream(
+        config,
+        move |out: &mut [f32], _| {
+            let mut q = ring.q.lock().unwrap();
+            let mut starved = false;
+            for frame in out.chunks_mut(channels) {
+                pos += step;
+                while pos >= 1.0 {
+                    pos -= 1.0;
+                    cur = next;
+                    next = match (q.pop_front(), q.pop_front()) {
+                        (Some(l), Some(r)) => (l as f32 / 32768.0, r as f32 / 32768.0),
+                        _ => {
+                            starved = true;
+                            (0.0, 0.0)
+                        }
+                    };
+                }
+                let f = pos as f32;
+                let (l, r) = (cur.0 + (next.0 - cur.0) * f, cur.1 + (next.1 - cur.1) * f);
+                for (c, s) in frame.iter_mut().enumerate() {
+                    *s = if c % 2 == 0 { l } else { r };
+                }
+            }
+            if starved && ring.started.load(Ordering::Relaxed) {
+                ring.underruns.fetch_add(1, Ordering::Relaxed);
+            }
+        },
+        |e| eprintln!("audio: {e}"),
+        None,
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// Headless panel picture: C4-E4-G4 held from 0.8 s, PLAY pressed at 1.2 s,
@@ -895,9 +950,21 @@ fn button(k: Key) -> Option<u8> {
     })
 }
 
-/// Connect the MIDI inputs `--midi` asks for: their bytes go to the MIDI IN jack. The
-/// connections live as long as the returned value.
-fn midi_inputs(o: &Opts, tx: &mpsc::Sender<Action>) -> Vec<midir::MidiInputConnection<()>> {
+/// The MIDI inputs `--midi` asks for, by name.
+fn midi_input_names(o: &Opts) -> Vec<String> {
+    if o.midi == "none" {
+        return Vec::new();
+    }
+    let Ok(probe) = midir::MidiInput::new("fm1-live") else { return Vec::new() };
+    probe.ports().iter().filter_map(|p| probe.port_name(p).ok())
+        .filter(|n| o.midi == "all" || n.to_lowercase().contains(&o.midi.to_lowercase()))
+        .collect()
+}
+
+/// Connect the MIDI inputs `--midi` asks for: their messages go through the controller profile
+/// (crates/fm1-map) to the panel and the MIDI IN jack, or with `--map none` to the jack as they
+/// are. The connections live as long as the returned value.
+fn midi_inputs(o: &Opts, tx: &mpsc::Sender<Action>, control: &Arc<ctl::Ctl>) -> Vec<midir::MidiInputConnection<()>> {
     let mut conns = Vec::new();
     if o.midi == "none" {
         return conns;
@@ -916,8 +983,12 @@ fn midi_inputs(o: &Opts, tx: &mpsc::Sender<Action>) -> Vec<midir::MidiInputConne
         }
         let Ok(mut input) = midir::MidiInput::new("fm1-live") else { continue };
         input.ignore(midir::Ignore::None);
-        let (tx, ch) = (tx.clone(), o.midi_ch);
+        let (tx, ch, control) = (tx.clone(), o.midi_ch, control.clone());
         let got = input.connect(&port, "fm1-live in", move |_, msg, _| {
+            if control.on && !msg.is_empty() && msg[0] != 0xf0 {
+                control.feed(msg, &tx);
+                return;
+            }
             for (i, &b) in msg.iter().enumerate() {
                 let b = if i == 0 && ch != 0 && (0x80..0xf0).contains(&b) { (b & 0xf0) | (ch - 1) } else { b };
                 let _ = tx.send(Action::Midi { b });
@@ -926,6 +997,7 @@ fn midi_inputs(o: &Opts, tx: &mpsc::Sender<Action>) -> Vec<midir::MidiInputConne
         match got {
             Ok(c) => {
                 eprintln!("MIDI in: {name}");
+                control.inputs.lock().unwrap().push(name);
                 conns.push(c);
             }
             Err(e) => eprintln!("MIDI in: {name}: {e}"),
@@ -944,6 +1016,13 @@ const USAGE: &str = "usage: fm1-live --fwsc FIRMWARE.fwsc   (a firmware package:
        fm1-live --fw ID | --fw list    (the page's list, in a checkout: node tools/fetch_firmwares.mjs)
        fm1-live --bin XIP.bin [--entry 0x02000120]
 options: [--mhz 240] [--syx BANK.syx] [--midi all|none|NAME] [--midi-ch N] [--flash FILE] [--usb]
+         [--map auto|none|NAME|FILE.json]  a MIDI controller as the panel (profiles: crates/fm1-map;
+                                 yours in %APPDATA%\fm1-emu\controllers or ~/.config/fm1-emu/controllers)
+         [--latency MS] (12)     audio queued ahead of the device; it grows by itself on underruns
+         [--buffer FRAMES]       the audio device's buffer, if it takes one
+window: right-click a control, then move or press one of your controller's: MIDI learn (right-click
+        again: cancel, Delete: unbind); F1 labels, F2 keys: panel / MIDI / auto, F3 record a WAV
+        (to Music/fm1-emu), F4 open another firmware
          [--flaky-core1 RATE [--seed N]] [--cpu1-survives] [--version] [--help]
 headless: --bench MS   run MS emulated ms as fast as it goes, report the speed
           --shot MS    run MS ms, then write the panel to work/panel.ppm
@@ -986,6 +1065,15 @@ fn main() {
         println!("{USAGE}");
         return;
     }
+    // started with nothing (a double-click): ask for a firmware package
+    #[cfg(any(windows, target_os = "macos"))]
+    if std::env::args().len() == 1 {
+        let picked = rfd::FileDialog::new().add_filter("FM-1 firmware", &["fwsc"]).set_title("Open an FM-1 firmware").pick_file();
+        if let (Some(path), Ok(exe)) = (picked, std::env::current_exe()) {
+            let _ = std::process::Command::new(exe).arg("--fwsc").arg(path).status();
+        }
+        return;
+    }
     let Some(o) = parse() else {
         eprintln!("{USAGE}");
         std::process::exit(2);
@@ -1017,7 +1105,7 @@ fn main() {
     let mut pot = m.soc.periph.adc_value[4];
 
     let ring = Arc::new(AudioRing { q: Mutex::new(VecDeque::new()), started: AtomicBool::new(false), underruns: AtomicU64::new(0) });
-    let _stream = match start_audio(ring.clone()) {
+    let _stream = match start_audio(ring.clone(), o.buffer) {
         Ok(s) => Some(s),
         Err(e) => {
             eprintln!("audio off: {e}");
@@ -1031,13 +1119,29 @@ fn main() {
     let status = Arc::new(Mutex::new(String::from("booting")));
     let quit = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::channel::<Action>();
-    let _midi = midi_inputs(&o, &tx);
+    // the MIDI inputs, through the controller profile (--map) to the panel and the MIDI IN jack
+    let names = midi_input_names(&o);
+    let profile = match ctl::choose(&o.map, &names) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("--map: {e}");
+            std::process::exit(2);
+        }
+    };
+    if let Some(p) = &profile {
+        eprintln!("controller: {} (F1 shows what is bound where; right-click a control to learn)", p.name);
+    }
+    let control = Arc::new(ctl::Ctl::new(profile, o.midi_ch));
+    let _midi = midi_inputs(&o, &tx, &control);
+    let recorder: Arc<Mutex<Option<ctl::Wav>>> = Arc::new(Mutex::new(None));
+    let target_ms = Arc::new(AtomicU64::new(o.latency_ms.to_bits()));
     let (usb_tx, usb_rx) = mpsc::channel::<Vec<u8>>();
     let usb_on = o.usb;
 
     let audio_ok = _stream.is_some();
     let emu = {
         let (ring, lcd, leds, pads, status, quit) = (ring.clone(), lcd.clone(), leds.clone(), pads.clone(), status.clone(), quit.clone());
+        let (recorder, target_ms) = (recorder.clone(), target_ms.clone());
         let flash = o.flash.clone();
         std::thread::spawn(move || {
             high_priority();
@@ -1047,6 +1151,7 @@ fn main() {
             let mut last_stat = Instant::now();
             let (mut stat_emu, mut stat_wall) = (0u64, Instant::now());
             let mut usb_ports = UsbPorts::default();
+            let mut underruns_seen = 0u64;
             while !quit.load(Ordering::Relaxed) {
                 while let Ok(a) = rx.try_recv() {
                     m.soc.periph.apply(&a);
@@ -1060,8 +1165,18 @@ fn main() {
                     offset_ms += real - emu_ms - LEAD_MS; // too far behind: resync, do not race
                 }
                 let buffered = ring.q.lock().unwrap().len() as f64 / 88.2;
+                // an underrun: a little more queued from now on
+                let u = ring.underruns.load(Ordering::Relaxed);
+                let mut target = f64::from_bits(target_ms.load(Ordering::Relaxed));
+                if u > underruns_seen {
+                    underruns_seen = u;
+                    if target < AUDIO_TARGET_MAX_MS {
+                        target = (target + AUDIO_TARGET_STEP_MS).min(AUDIO_TARGET_MAX_MS);
+                        target_ms.store(target.to_bits(), Ordering::Relaxed);
+                    }
+                }
                 let behind = if audio_ok && m.soc.periph.audio_halves > 0 {
-                    buffered < AUDIO_TARGET_MS
+                    buffered < target
                 } else {
                     emu_ms < real + LEAD_MS
                 };
@@ -1075,6 +1190,9 @@ fn main() {
                     std::thread::sleep(Duration::from_millis(1));
                 }
                 if !m.soc.periph.audio.is_empty() {
+                    if let Some(w) = recorder.lock().unwrap().as_mut() {
+                        w.write(&m.soc.periph.audio);
+                    }
                     let mut q = ring.q.lock().unwrap();
                     q.extend(m.soc.periph.audio.drain(..));
                     ring.started.store(true, Ordering::Relaxed);
@@ -1101,8 +1219,9 @@ fn main() {
                     let speed = (e - stat_emu) as f64 / stat_wall.elapsed().as_secs_f64() / 1000.0;
                     let buffered = ring.q.lock().unwrap().len() as f64 / 88.2;
                     *status.lock().unwrap() = format!(
-                        "{:.2}x real time | {} MHz | audio {:.0} ms buffered, {} underruns",
-                        speed, m.soc.periph.hz / 1_000_000, buffered, ring.underruns.load(Ordering::Relaxed)
+                        "{:.2}x real time | {} MHz | audio {:.0} ms queued (target {:.0}), {} underruns",
+                        speed, m.soc.periph.hz / 1_000_000, buffered, f64::from_bits(target_ms.load(Ordering::Relaxed)),
+                        ring.underruns.load(Ordering::Relaxed)
                     );
                     if e / 2000 != stat_emu / 2000 {
                         eprintln!("[{:5.1} s] {}", e as f64 / 1000.0, status.lock().unwrap());
@@ -1144,6 +1263,16 @@ fn main() {
     let mut mouse_vel = 0u8;                    // the key under the mouse: how hard (its height; lower = harder)
     let (mut last_y, mut drag_acc) = (0f32, 0f32);
     let mut last_title = Instant::now();
+    // the controller: its labels over the panel, MIDI learn, the recorder, the keys' mode
+    let mut labels = false;
+    let mut right_was = false;
+    let mut note = String::new(); // what the title says for a few seconds
+    let mut note_at = Instant::now();
+    let say = |s: String, note: &mut String, note_at: &mut Instant| {
+        eprintln!("{s}");
+        *note = s;
+        *note_at = Instant::now();
+    };
     eprintln!("mouse: click/drag the keys (lower = harder; drag down on a held key = aftertouch), click buttons, drag or scroll the knobs (MASTER = volume)");
     eprintln!("keys: A W S E D F T G Y H U J K O L P ; ' = C4..F5, Z/X OCT, Space PLAY, R REC, 1..0 buttons, arrows and , . for SELECT/PRESETS/ALGORITHM; Esc quits");
 
@@ -1231,6 +1360,91 @@ fn main() {
         }
         was_pressed = pressed;
 
+        // ---- MIDI learn: right-click a control, then move or press one of the controller's
+        let right = win.get_mouse_down(MouseButton::Right);
+        if right && !right_was && control.on {
+            if let Some(c) = pos.and_then(|(mx, my)| panel::hit(mx, my)) {
+                let t = ctl::target_of(c);
+                let mut mp = control.mapper.lock().unwrap();
+                if mp.learning() == Some(t) {
+                    mp.learn(None);
+                    drop(mp);
+                    say("learn: cancelled".into(), &mut note, &mut note_at);
+                } else {
+                    mp.learn(Some(t));
+                    drop(mp);
+                    labels = true;
+                    let what = if matches!(t, fm1_map::Target::Key(_)) { "press the note that should play it" } else { "move or press a control" };
+                    say(format!("learn {t}: {what} (right-click again: cancel, Delete: unbind)"), &mut note, &mut note_at);
+                }
+            }
+        }
+        right_was = right;
+
+        // ---- what the controller did since the last frame
+        let midi_down;
+        {
+            let mut v = control.view.lock().unwrap();
+            midi_down = v.down;
+            for i in 0..7 {
+                if v.enc[i] != 0 {
+                    enc_clicks[i] += v.enc[i];
+                    turning[i] = 10;
+                    v.enc[i] = 0;
+                }
+            }
+            if let Some(p) = v.pot.take() {
+                pot = p;
+                turning[7] = 10;
+            }
+            let events = std::mem::take(&mut v.events);
+            drop(v);
+            for e in events {
+                match e {
+                    ctl::Ui::Labels => labels = !labels,
+                    ctl::Ui::Record => toggle_record(&recorder, &o.name, &mut note, &mut note_at),
+                    ctl::Ui::KeysMode(k) => say(format!("keys: {}", k.name()), &mut note, &mut note_at),
+                    ctl::Ui::Learned => {
+                        let p = control.mapper.lock().unwrap().profile().clone();
+                        match fm1_map::save_user(&p) {
+                            Ok(path) => say(format!("learned; {} saved to {}", p.name, path.display()), &mut note, &mut note_at),
+                            Err(e) => say(format!("learned, not saved: {e}"), &mut note, &mut note_at),
+                        }
+                    }
+                }
+            }
+        }
+        for k in win.get_keys_pressed(KeyRepeat::No) {
+            match k {
+                Key::F1 => labels = !labels,
+                Key::F2 if control.on => {
+                    let mut v = control.view.lock().unwrap();
+                    let mut mp = control.mapper.lock().unwrap();
+                    let next = mp.keys_mode().next();
+                    mp.set_keys_mode(next, &mut |out| ctl::apply(out, &tx, &mut v, control.midi_ch));
+                    drop(mp);
+                    v.events.retain(|e| !matches!(e, ctl::Ui::KeysMode(_)));
+                    drop(v);
+                    say(format!("keys: {}", next.name()), &mut note, &mut note_at);
+                }
+                Key::F3 => toggle_record(&recorder, &o.name, &mut note, &mut note_at),
+                Key::F4 => open_another(&o),
+                Key::Delete | Key::Backspace if control.on => {
+                    let mut mp = control.mapper.lock().unwrap();
+                    if let Some(t) = mp.learning() {
+                        let t = if matches!(t, fm1_map::Target::Key(_)) { fm1_map::Target::Keys } else { t };
+                        mp.learn(None);
+                        mp.unbind(t);
+                        let p = mp.profile().clone();
+                        drop(mp);
+                        let saved = fm1_map::save_user(&p).map_or_else(|e| format!(", not saved: {e}"), |_| String::new());
+                        say(format!("{t}: unbound{saved}"), &mut note, &mut note_at);
+                    }
+                }
+                _ => {}
+            }
+        }
+
         // ---- held keys and buttons: computer keyboard + mouse
         let mut want = [false; 41];
         for k in win.get_keys() {
@@ -1276,19 +1490,91 @@ fn main() {
         }
         {
             let fb = lcd.lock().unwrap();
-            let st = panel::State { lcd: &fb, enc_clicks: &enc_clicks, pot, down: &down, leds: &shown_leds, turning: &turning };
+            let mut shown_down = down;
+            for i in 0..41 {
+                shown_down[i] |= midi_down[i];
+            }
+            let st = panel::State { lcd: &fb, enc_clicks: &enc_clicks, pot, down: &shown_down, leds: &shown_leds, turning: &turning };
             panel::draw(&mut buf, &base, &st);
+        }
+        if labels && control.on {
+            let learning = control.mapper.lock().unwrap().learning();
+            ctl::draw_labels(&mut buf, &control, learning);
+        }
+        if let Some(w) = recorder.lock().unwrap().as_ref() {
+            panel::text(&mut buf, (W - 90) as f32, 12.0, &format!("REC {}", w.frames / 44_100), 2, 0xff5050);
         }
         if win.update_with_buffer(&buf, W, H).is_err() {
             break;
         }
         if last_title.elapsed() >= Duration::from_millis(500) {
-            win.set_title(&format!("FM-1 · {} — {}", o.name, status.lock().unwrap()));
+            let mut extra = String::new();
+            if control.on {
+                let mp = control.mapper.lock().unwrap();
+                extra = format!(" | {} · keys: {}", mp.profile().name, mp.keys_mode().name());
+            }
+            if note_at.elapsed() < Duration::from_secs(6) && !note.is_empty() {
+                extra += &format!(" | {note}");
+            }
+            win.set_title(&format!("FM-1 · {} — {}{extra}", o.name, status.lock().unwrap()));
             last_title = Instant::now();
         }
     }
     quit.store(true, Ordering::Relaxed);
     let _ = emu.join();
+    if let Some(w) = recorder.lock().unwrap().take() {
+        if let Ok(p) = w.finish() {
+            eprintln!("recorded {}", p.display());
+        }
+    }
+}
+
+/// F3: start a WAV, or finish the one being written.
+fn toggle_record(rec: &Mutex<Option<ctl::Wav>>, name: &str, note: &mut String, note_at: &mut Instant) {
+    let mut r = rec.lock().unwrap();
+    let msg = match r.take() {
+        Some(w) => match w.finish() {
+            Ok(p) => format!("recorded {}", p.display()),
+            Err(e) => format!("recording: {e}"),
+        },
+        None => match ctl::Wav::create(name) {
+            Ok(w) => {
+                let m = format!("recording to {} (F3 stops)", w.path.display());
+                *r = Some(w);
+                m
+            }
+            Err(e) => format!("recording: {e}"),
+        },
+    };
+    eprintln!("{msg}");
+    *note = msg;
+    *note_at = Instant::now();
+}
+
+/// F4: pick another firmware package and start again on it, with the same options.
+fn open_another(_o: &Opts) {
+    #[cfg(any(windows, target_os = "macos"))]
+    if let Some(path) = rfd::FileDialog::new().add_filter("FM-1 firmware", &["fwsc"]).set_title("Open an FM-1 firmware").pick_file() {
+        let mut args: Vec<String> = Vec::new();
+        let mut it = std::env::args().skip(1);
+        while let Some(a) = it.next() {
+            // the old firmware out, the rest kept
+            if a == "--fw" || a == "--fwsc" || a == "--bin" {
+                it.next();
+                continue;
+            }
+            args.push(a);
+        }
+        args.push("--fwsc".into());
+        args.push(path.to_string_lossy().into_owned());
+        if let Ok(exe) = std::env::current_exe() {
+            if std::process::Command::new(exe).args(&args).spawn().is_ok() {
+                std::process::exit(0);
+            }
+        }
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    eprintln!("F4: give the firmware on the command line here (--fwsc FILE)");
 }
 
 /// The SMK-37's window: its panel (panel_smk.rs), the mouse on its keys (velocity: how far down

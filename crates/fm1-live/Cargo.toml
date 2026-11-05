@@ -11,3 +11,8 @@ fm1-soc = { path = "../fm1-soc" }
 minifb = "0.28"
 cpal = "0.15"
 midir = "0.10"
+fm1-map = { path = "../fm1-map" }
+
+# a file picker for the firmware (started with no arguments, F4)
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+rfd = "0.15"

@@ -1,0 +1,72 @@
+# Windows x86-64: fm1-live (the standalone player) and the controller mapping (crates/fm1-map),
+# built, tested and benchmarked on a firmware, kept as the run's artifacts. Lockfiles are
+# brought up to date first and kept too, so a change of dependencies can be committed from them.
+
+name: Windows build
+
+on:
+  push:
+    branches: ['feat/**']
+  pull_request:
+    paths:
+      - 'crates/fm1-map/**'
+      - 'crates/fm1-live/**'
+      - '.github/workflows/windows-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fm1-live:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Lockfiles (resolved as the manifests ask)
+        shell: bash
+        run: |
+          cargo metadata --format-version 1 > /dev/null
+          cargo metadata --format-version 1 --manifest-path crates/fm1-plugin/Cargo.toml > /dev/null
+          git diff --stat -- Cargo.lock crates/fm1-plugin/Cargo.lock
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lockfiles
+          path: |
+            Cargo.lock
+            crates/fm1-plugin/Cargo.lock
+
+      - name: Controller mapping tests
+        run: cargo test --release -p fm1-map
+
+      - name: Build fm1-live
+        run: cargo build --release -p fm1-live
+
+      - name: Speed on Felucca and SLOOP (headless)
+        shell: bash
+        run: |
+          node tools/fetch_firmwares.mjs felucca sloop || true
+          target/release/fm1-live --version
+          for fw in felucca sloop; do
+            if [ -f reference/firmwares/$fw.fwsc ]; then
+              target/release/fm1-live --fw $fw --midi none --bench 4000 | tail -1
+            fi
+          done
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist/fm1-live-windows-x86_64/controllers
+          cp target/release/fm1-live.exe dist/fm1-live-windows-x86_64/
+          cp crates/fm1-map/profiles/*.json dist/fm1-live-windows-x86_64/controllers/
+          cp crates/fm1-map/README.md dist/fm1-live-windows-x86_64/CONTROLLERS.md 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fm1-live-windows-x86_64
+          path: dist/fm1-live-windows-x86_64
