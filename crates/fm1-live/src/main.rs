@@ -43,6 +43,8 @@ use panel::{Ctl, ENCS, H, W};
 #[path = "../../fm1-emu/src/buildinfo.rs"]
 mod buildinfo;
 mod ctl;
+#[cfg(windows)]
+mod exclusive;
 mod labels;
 mod wav;
 mod panel;
@@ -96,6 +98,8 @@ struct Opts {
     latency_ms: f64,
     /// --buffer FRAMES: ask the audio device for this buffer size
     buffer: Option<u32>,
+    /// --exclusive (Windows): the output in WASAPI exclusive mode
+    exclusive: bool,
 }
 
 /// The firmware catalog web/firmwares.json as (id, name, version, package path): each package is
@@ -123,11 +127,16 @@ fn parse() -> Option<Opts> {
     let mut o = Opts { bin: "work/felucca_xip.bin".into(), entry: 0x0200_0120, mhz: 240, bench: None, shot: None,
                        name: "Felucca".into(), fwsc: None, syx: None, midi: "all".into(), midi_ch: 0,
                        flaky_core1: None, cpu1_survives: false, seed: None, flash: None, usb: false,
-                       map: "auto".into(), latency_ms: 12.0, buffer: None };
+                       map: "auto".into(), latency_ms: 12.0, buffer: None, exclusive: false };
     let mut i = 1;
     while i < a.len() {
         if a[i] == "--usb" {
             o.usb = true;
+            i += 1;
+            continue;
+        }
+        if a[i] == "--exclusive" {
+            o.exclusive = true;
             i += 1;
             continue;
         }
@@ -1022,6 +1031,8 @@ options: [--mhz 240] [--syx BANK.syx] [--midi all|none|NAME] [--midi-ch N] [--fl
                                  yours in %APPDATA%\\fm1-emu\\controllers or ~/.config/fm1-emu/controllers)
          [--latency MS] (12)     audio queued ahead of the device; it grows by itself on underruns
          [--buffer FRAMES]       the audio device's buffer, if it takes one
+         [--exclusive]           Windows: the output in WASAPI exclusive mode, the device's shortest
+                                 period (lowest latency; other programs can't play on it meanwhile)
 window: right-click a control, then move or press one of your controller's: MIDI learn (right-click
         again: cancel, Delete: unbind); F1 labels, F2 keys: panel / MIDI / auto, F3 record a WAV
         (to Music/fm1-emu), F4 open another firmware
@@ -1107,11 +1118,30 @@ fn main() {
     let mut pot = m.soc.periph.adc_value[4];
 
     let ring = Arc::new(AudioRing { q: Mutex::new(VecDeque::new()), started: AtomicBool::new(false), underruns: AtomicU64::new(0) });
-    let _stream = match start_audio(ring.clone(), o.buffer) {
-        Ok(s) => Some(s),
-        Err(e) => {
-            eprintln!("audio off: {e}");
-            None
+    let mut exclusive_on = false;
+    #[cfg(windows)]
+    if o.exclusive {
+        match exclusive::start(ring.clone()) {
+            Ok(msg) => {
+                eprintln!("{msg}");
+                exclusive_on = true;
+            }
+            Err(e) => eprintln!("--exclusive: {e}; the shared output it is"),
+        }
+    }
+    #[cfg(not(windows))]
+    if o.exclusive {
+        eprintln!("--exclusive: Windows only; the default output it is");
+    }
+    let _stream = if exclusive_on {
+        None
+    } else {
+        match start_audio(ring.clone(), o.buffer) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                eprintln!("audio off: {e}");
+                None
+            }
         }
     };
     let lcd = Arc::new(Mutex::new(vec![0u16; 240 * 240]));
@@ -1140,7 +1170,7 @@ fn main() {
     let (usb_tx, usb_rx) = mpsc::channel::<Vec<u8>>();
     let usb_on = o.usb;
 
-    let audio_ok = _stream.is_some();
+    let audio_ok = _stream.is_some() || exclusive_on;
     let emu = {
         let (ring, lcd, leds, pads, status, quit) = (ring.clone(), lcd.clone(), leds.clone(), pads.clone(), status.clone(), quit.clone());
         let (recorder, target_ms) = (recorder.clone(), target_ms.clone());

@@ -195,7 +195,7 @@ pub fn create(params: Arc<Fm1Params>, link: Arc<Link>) -> Option<Box<dyn Editor>
                             pick = Some(None);
                         }
                         for p in &ui.profiles {
-                            if menu.selectable_label(now.as_deref() == Some(p.name.as_str()), &p.name).on_hover_text(&p.notes).clicked() {
+                            if menu.selectable_label(now.as_deref() == Some(p.name.as_str()), p.name.as_str()).on_hover_text(p.notes.as_str()).clicked() {
                                 pick = Some(Some(p.clone()));
                             }
                         }

@@ -16,3 +16,7 @@ fm1-map = { path = "../fm1-map" }
 # a file picker for the firmware (started with no arguments, F4)
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 rfd = "0.15"
+
+# --exclusive: WASAPI exclusive mode
+[target.'cfg(windows)'.dependencies]
+wasapi = "0.26"
