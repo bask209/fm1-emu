@@ -57,9 +57,9 @@ scale played from the bottom jumps. *MIDI IN* and *auto* play every note at its 
 | joystick, sustain | the firmware's MIDI IN |
 
 The knobs are absolute out of the box, so a knob stops turning an encoder at its end. For endless
-turning, set knobs 1–7 to *Relative* in Akai's MPK mini 3 program editor and change their `mode`
-to `relative` in the profile (if they turn the wrong way or jump, try `relative-64` or
-`relative-signed`: controllers encode relative knobs in one of those three ways).
+turning, as the FM-1's own encoders, set knobs 1–7 to *Relative* in Akai's MPK mini 3 program
+editor: nothing to change here, a knob that sends relative values (1 a tick one way, 127 the
+other) is recognised from its first two ticks and turns its encoder a step a tick.
 
 ## The profile format
 
@@ -87,7 +87,9 @@ to `relative` in the profile (if they turn the wrong way or jump, try `relative-
   `PLAY` `REC`), an encoder (`SELECT` `PRESETS` `ALGORITHM` `KNOB1`–`KNOB4`), `MASTER`, `keys`
   (a key zone), `key:C4` (one key), `midi` (to MIDI IN), `ignore`, or the front end's own
   `keys-mode`, `record`, `labels`.
-- `mode`: knobs `absolute` (the default for a CC), `relative` (two's complement),
+- `mode`: knobs `auto` (the default for a CC: absolute, or relative in two's complement once the
+  knob shows it is: a value near an end twice, or a jump across the range between two such values),
+  `absolute` (always), `relative` (two's complement),
   `relative-64`, `relative-signed`; buttons `momentary` (the default) or `toggle`; `step` turns
   an encoder `scale` clicks a press.
 - `scale`: encoder clicks per step. `base`: the note that plays the panel's F3 (53 = F3).

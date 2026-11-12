@@ -209,3 +209,28 @@ fn pick_by_device_name() {
     assert_eq!(pick(&all, "Some Other Keyboard").unwrap().name, "Generic keyboard");
     assert_eq!(Profile { name: "My Pads / 2".into(), ..Profile::default() }.file_name(), "my-pads---2.json");
 }
+
+#[test]
+fn a_knob_set_to_relative_on_the_controller_turns_a_step_a_tick() {
+    // the MPK mini 3 with its knobs set to Relative (captured): 1 a tick one way, 127 the other,
+    // 2 when turned fast; the profile says nothing about it (mode auto)
+    let mut m = mpk();
+    let v = run(&mut m, &[&[0xb0, 70, 1], &[0xb0, 70, 1], &[0xb0, 70, 1], &[0xb0, 70, 2]]);
+    assert_eq!(v, vec![Out::Enc { enc: 2, clicks: 1 }, Out::Enc { enc: 2, clicks: 1 }, Out::Enc { enc: 2, clicks: 2 }],
+        "the first tick only shows what the knob is; then a step a tick");
+    let v = run(&mut m, &[&[0xb0, 70, 127], &[0xb0, 70, 127], &[0xb0, 70, 126]]);
+    assert_eq!(v, vec![Out::Enc { enc: 2, clicks: -1 }, Out::Enc { enc: 2, clicks: -1 }, Out::Enc { enc: 2, clicks: -2 }],
+        "back the other way: no jump across the range");
+    // a knob that starts by turning back is found by the jump
+    let v = run(&mut m, &[&[0xb0, 71, 1], &[0xb0, 71, 127]]);
+    assert_eq!(v, vec![Out::Enc { enc: 3, clicks: -1 }]);
+}
+
+#[test]
+fn an_absolute_knob_stays_absolute_at_its_ends() {
+    let mut m = mpk();
+    // up to the top, down to the bottom: an absolute knob sends each change once, so never read as relative
+    let v = run(&mut m, &[&[0xb0, 70, 120], &[0xb0, 70, 126], &[0xb0, 70, 127], &[0xb0, 70, 125], &[0xb0, 70, 100], &[0xb0, 70, 14], &[0xb0, 70, 13], &[0xb0, 70, 1]]);
+    let clicks: Vec<i32> = v.iter().map(|o| match o { Out::Enc { clicks, .. } => *clicks, _ => 0 }).collect();
+    assert_eq!(clicks, vec![6, 1, -2, -25, -86, -1, -12]);
+}

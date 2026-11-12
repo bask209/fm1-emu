@@ -463,6 +463,8 @@ pub struct Mapper {
     keys_mode: KeysMode,
     /// The last absolute value of each channel's CCs (NONE: not seen).
     last_cc: Box<[[u8; 128]; 16]>,
+    /// CCs seen to come from a relative knob (Mode::Auto only): see `steps`.
+    rel_cc: Box<[[bool; 128]; 16]>,
     /// The panel key each held note pressed (NONE: none), so its release lets go of that key
     /// whatever changed since.
     held_note: Box<[[u8; 128]; 16]>,
@@ -484,6 +486,7 @@ impl Mapper {
             frac: vec![0.0; profile.bindings.len()],
             profile,
             last_cc: Box::new([[NONE; 128]; 16]),
+            rel_cc: Box::new([[false; 128]; 16]),
             held_note: Box::new([[NONE; 128]; 16]),
             key_count: [0; NKEYS as usize],
             latched: [false; 14],
@@ -507,6 +510,7 @@ impl Mapper {
         self.frac = vec![0.0; p.bindings.len()];
         self.profile = p;
         self.last_cc.iter_mut().for_each(|r| *r = [NONE; 128]);
+        self.rel_cc.iter_mut().for_each(|r| *r = [false; 128]);
     }
     /// The next note or CC binds to `t` (none: stop learning). A panel key, `Target::Key(n)`,
     /// learns the key zone so that the note pressed plays key n.
@@ -745,12 +749,31 @@ impl Mapper {
         if kind != 0xb0 {
             return 0.0;
         }
+        let twos = |v: u8| match v {
+            1..=63 => v as f32,
+            65..=127 => v as f32 - 128.0,
+            _ => 0.0,
+        };
+        let (c, n) = (ch as usize, d1 as usize);
+        if mode == Mode::Auto {
+            // A relative knob set to Relative on the controller (the MPK mini 3's: 1 a step one
+            // way, 127 the other, 2 or 126 when turned fast) read as absolute jumps from end to
+            // end at every turn the other way. So: a value near either end sent twice in a row,
+            // or a jump of more than half the range between two such values, is a relative knob
+            // (an absolute knob only sends changes, a step at a time), from then on.
+            if self.rel_cc[c][n] {
+                return twos(v);
+            }
+            let last = self.last_cc[c][n];
+            let near_end = |x: u8| (1..=15).contains(&x) || (113..=127).contains(&x);
+            if last != NONE && near_end(v) && near_end(last) && (v == last || v.abs_diff(last) > 63) {
+                self.rel_cc[c][n] = true;
+                self.last_cc[c][n] = v;
+                return twos(v);
+            }
+        }
         match mode {
-            Mode::Relative => match v {
-                1..=63 => v as f32,
-                65..=127 => v as f32 - 128.0,
-                _ => 0.0,
-            },
+            Mode::Relative => twos(v),
             Mode::Relative64 => v as f32 - 64.0,
             Mode::RelativeSigned => match v {
                 1..=63 => v as f32,
@@ -759,7 +782,7 @@ impl Mapper {
             },
             _ => {
                 // absolute: the change since the last value; the first one only sets it
-                let last = &mut self.last_cc[ch as usize][d1 as usize];
+                let last = &mut self.last_cc[c][n];
                 let s = if *last == NONE { 0.0 } else { v as f32 - *last as f32 };
                 *last = v;
                 s
