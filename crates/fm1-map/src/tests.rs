@@ -90,9 +90,8 @@ fn pads_hold_buttons_and_knobs_turn_encoders() {
     let mut m = mpk();
     let v = run(&mut m, &[&[0x99, 43, 100], &[0x89, 43, 0]]);
     assert_eq!(v, vec![Out::Key { id: 7, down: true, vel: 0 }, Out::Key { id: 7, down: false, vel: 0 }], "pad A8 is GLO");
-    // absolute: the first value only sets where the knob is, then each change turns, a click
-    // per five steps (scale 0.2: a sweep of the knob is about a turn of the FM-1's encoder)
-    let v = run(&mut m, &[&[0xb0, 70, 10], &[0xb0, 70, 25], &[0xb0, 70, 14]]);
+    // absolute: the first value only sets where the knob is, then each change turns
+    let v = run(&mut m, &[&[0xb0, 70, 10], &[0xb0, 70, 13], &[0xb0, 70, 11]]);
     assert_eq!(v, vec![Out::Enc { enc: 2, clicks: 3 }, Out::Enc { enc: 2, clicks: -2 }]);
     let v = run(&mut m, &[&[0xb0, 77, 127]]);
     assert_eq!(v, vec![Out::Adc { ch: POT_ADC, value: 1023 }], "knob 8 is MASTER");
