@@ -207,6 +207,12 @@ fn pick_by_device_name() {
     let all = builtin();
     assert_eq!(pick(&all, "MPK mini 3 MIDI 1").unwrap().name, "Akai MPK mini 3");
     assert_eq!(pick(&all, "Some Other Keyboard").unwrap().name, "Generic keyboard");
+    // the names other systems give it (Android: manufacturer and product)
+    for name in ["AKAI PROFESSIONAL,LP MPK mini 3", "MPK Mini Mk3", "MPKmini3", "mpk-mini-3 MIDI 1"] {
+        assert_eq!(pick(&all, name).unwrap().name, "Akai MPK mini 3", "{name}");
+    }
+    assert!(pick_named(&all, "Some Other Keyboard").is_none());
+    assert!(pick_named(&all, "MPK mini Plus").is_none());
     assert_eq!(Profile { name: "My Pads / 2".into(), ..Profile::default() }.file_name(), "my-pads---2.json");
 }
 

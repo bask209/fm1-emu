@@ -414,13 +414,35 @@ pub fn save_user(p: &Profile) -> Result<PathBuf, String> {
 /// The profile for a MIDI input named `device`: the first whose `device` it contains, else the
 /// one named "Generic", else the first.
 pub fn pick(profiles: &[Profile], device: &str) -> Option<Profile> {
-    let d = device.to_lowercase();
-    profiles
-        .iter()
-        .find(|p| !p.device.is_empty() && d.contains(&p.device.to_lowercase()))
+    pick_named(profiles, device)
         .or_else(|| profiles.iter().find(|p| p.name.to_lowercase().starts_with("generic")))
         .or_else(|| profiles.first())
         .cloned()
+}
+
+/// The profile made for a MIDI input named `device`, if one is: its `device` in the name, the
+/// way systems write it ("MPK mini 3", "MPK Mini Mk3", "AKAI MPKmini3 MIDI 1"): case, spaces,
+/// punctuation and a "mk" before a number make no difference.
+pub fn pick_named<'a>(profiles: &'a [Profile], device: &str) -> Option<&'a Profile> {
+    fn norm(s: &str) -> String {
+        let c: Vec<char> = s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect();
+        let mut out = String::with_capacity(c.len());
+        let mut i = 0;
+        while i < c.len() {
+            if c[i] == 'm' && c.get(i + 1) == Some(&'k') && c.get(i + 2).is_some_and(char::is_ascii_digit) {
+                i += 2;
+                continue;
+            }
+            out.push(c[i]);
+            i += 1;
+        }
+        out
+    }
+    let d = norm(device);
+    profiles.iter().find(|p| {
+        let n = norm(&p.device);
+        !n.is_empty() && d.contains(&n)
+    })
 }
 
 /// What the mapper asks of the machine or the front end.
