@@ -37,6 +37,10 @@ A profile there replaces a built-in one of the same name.
 - **MIDI IN**: your keys play the firmware through its MIDI driver, with your keyboard's range
   and velocity (firmwares that read MIDI IN only).
 - **auto**: MIDI IN, but the panel's keys while you hold a function button (FX … SEQ).
+  On SLOOP 2.8.5's drum track (track 4) too: there a MIDI note picks a General MIDI drum and
+  its velocity the hit's level, where the panel's keys play the 16 sounds in order at the
+  normal level and work the DRUMS grid. The emulator reads the selected track from SLOOP's
+  memory (`FirmwareWatch`); with another firmware auto stays as above.
 
 The panel's 27 keys run F3 to G5, so a keyboard's notes outside that range move by octaves onto
 them in *panel keys*: on a 25-key C-to-C keyboard the lowest C to E sound an octave up, and a
@@ -53,7 +57,7 @@ scale played from the bottom jumps. *MIDI IN* and *auto* play every note at its 
 | pads bank A, bottom row | PLAY, REC, SEQ, ARP |
 | pads bank B, top row | SCL, EDIT, SAVE, HOME |
 | pads bank B, bottom row | OCT−, OCT+, keys mode, record |
-| keys | *auto*: MIDI IN at their own pitch, on channel 16 (SLOOP: the selected track); the panel's keys while a function pad is held |
+| keys | *auto*: MIDI IN at their own pitch, on channel 16 (SLOOP: the selected track); the panel's keys while a function pad is held, and on SLOOP's drum track |
 | joystick, sustain | the firmware's MIDI IN |
 
 The knobs are absolute out of the box, so a knob stops turning an encoder at its end. For endless

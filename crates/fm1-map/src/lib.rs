@@ -499,6 +499,11 @@ pub struct Mapper {
     held_btn: [u8; 14],
     pot: u16,
     learn: Option<Target>,
+    /// The firmware's selected track is its drum track (the host tells, see [`FirmwareWatch`]):
+    /// in keys mode auto the keys press the panel's keys there, as a finger does, since a
+    /// drum track takes MIDI notes by another map (SLOOP: General MIDI drum notes, with the
+    /// velocity as the hit's level) than its keys (one sound a key, at the normal level).
+    drums: bool,
 }
 
 impl Mapper {
@@ -515,6 +520,7 @@ impl Mapper {
             held_btn: [0; 14],
             pot: 900,
             learn: None,
+            drums: false,
         };
         m.frac.resize(m.profile.bindings.len(), 0.0);
         m
@@ -549,6 +555,14 @@ impl Mapper {
         self.profile.bindings.retain(|_| { i += 1; keep[i - 1] });
         let mut i = 0;
         self.frac.retain(|_| { i += 1; keep[i - 1] });
+    }
+    /// The firmware's selected track is (or is no longer) its drum track. Held keys stay
+    /// where they went: each release follows its press.
+    pub fn set_drums(&mut self, on: bool) {
+        self.drums = on;
+    }
+    pub fn drums(&self) -> bool {
+        self.drums
     }
     pub fn set_keys_mode(&mut self, k: KeysMode, out: &mut dyn FnMut(Out)) {
         if k != self.keys_mode {
@@ -675,7 +689,7 @@ impl Mapper {
                     let to_midi = match self.keys_mode {
                         KeysMode::Panel => false,
                         KeysMode::Midi => to == Target::Keys,
-                        KeysMode::Auto => to == Target::Keys && !self.function_held(),
+                        KeysMode::Auto => to == Target::Keys && !self.function_held() && !self.drums,
                     };
                     if !note_on || self.held_note[ch as usize][d1 as usize] != NONE {
                         return; // (a release with nothing held, a second press without a release)
@@ -850,3 +864,46 @@ impl Mapper {
 
 #[cfg(test)]
 mod tests;
+
+/// Where a firmware the emulator knows keeps its selected track, so the host can tell the
+/// [`Mapper`] when the drum track is selected ([`Mapper::set_drums`]). Known by the package's
+/// bytes: another build (or another firmware) has none, and its keys work as before.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FirmwareWatch {
+    pub name: &'static str,
+    /// The selected track's byte, as an offset into the SoC's main RAM (at 0x01c00000).
+    pub sel: u32,
+    /// The drum track's number there.
+    pub drum: u8,
+    /// The tempo (a 16-bit BPM) at this offset: a check that the RAM is the firmware's song.
+    pub bpm: u32,
+}
+
+/// SLOOP 2.8.5 (sha256 b0446eff…ae67): `song.sel` (firmware/src/core.h song_t: 50 int16
+/// globals, playing, seq_mode, rec, then sel; the song at 0x14c90), the drum track
+/// TRK_DRUM = 3. Found by turning ALGORITHM in the emulator and reading which byte follows.
+const SLOOP_2_8_5: (usize, u64, FirmwareWatch) = (
+    610_076,
+    0xa31d_4871_003c_a875,
+    FirmwareWatch { name: "SLOOP 2.8.5", sel: 0x14cf7, drum: 3, bpm: 0x14c90 },
+);
+
+/// FNV-1a, 64 bits: the package's fingerprint.
+fn fnv64(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3))
+}
+
+impl FirmwareWatch {
+    /// The watch for a firmware package (.fwsc), if it is one the emulator knows.
+    pub fn for_package(pkg: &[u8]) -> Option<FirmwareWatch> {
+        let (len, hash, w) = SLOOP_2_8_5;
+        (pkg.len() == len && fnv64(pkg) == hash).then_some(w)
+    }
+    /// Is the drum track selected? `read8` reads the SoC's main RAM at an offset. None: the
+    /// song does not look like it is there (yet): the firmware is still starting.
+    pub fn drums(&self, read8: impl Fn(u32) -> u8) -> Option<bool> {
+        let sel = read8(self.sel);
+        let bpm = read8(self.bpm) as u16 | (read8(self.bpm + 1) as u16) << 8;
+        (sel < 4 && (20..=400).contains(&bpm)).then_some(sel == self.drum)
+    }
+}

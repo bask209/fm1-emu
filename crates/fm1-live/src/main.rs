@@ -1181,6 +1181,12 @@ fn main() {
     control.log = o.midi_log;
     let control = Arc::new(control);
     let _midi = midi_inputs(&o, &tx, &control);
+    // a firmware whose selected track can be read (SLOOP 2.8.5): on its drum track the
+    // controller's keys press the panel's keys (fm1_map::Mapper::set_drums)
+    let watch = o.fwsc.as_ref().and_then(|p| std::fs::read(p).ok()).and_then(|b| fm1_map::FirmwareWatch::for_package(&b));
+    if let Some(w) = &watch {
+        eprintln!("{}: on the drum track the controller's keys play the panel's keys", w.name);
+    }
     let recorder: Arc<Mutex<Option<wav::Wav>>> = Arc::new(Mutex::new(None));
     let target_ms = Arc::new(AtomicU64::new(o.latency_ms.to_bits()));
     let (usb_tx, usb_rx) = mpsc::channel::<Vec<u8>>();
@@ -1192,6 +1198,8 @@ fn main() {
         let (recorder, target_ms) = (recorder.clone(), target_ms.clone());
         let flash = o.flash.clone();
         let floor_ms = o.latency_ms;
+        let control = control.clone();
+        let mut drums: Option<bool> = None;
         std::thread::spawn(move || {
             high_priority();
             let start = Instant::now();
@@ -1268,6 +1276,15 @@ fn main() {
                         *leds.lock().unwrap() = m.soc.periph.led_take();
                     }
                     last_lcd = Instant::now();
+                    if let Some(d) = watch.and_then(|w| w.drums(|a| m.soc.ram.read8(a))) {
+                        if drums != Some(d) {
+                            drums = Some(d);
+                            control.mapper.lock().unwrap().set_drums(d);
+                            if control.log {
+                                eprintln!("drum track {}", if d { "selected: keys play the panel's keys" } else { "left" });
+                            }
+                        }
+                    }
                 }
                 if last_stat.elapsed() >= Duration::from_millis(500) {
                     let e = m.soc.periph.ms();

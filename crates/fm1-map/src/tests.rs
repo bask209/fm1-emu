@@ -240,3 +240,43 @@ fn an_absolute_knob_stays_absolute_at_its_ends() {
     let clicks: Vec<i32> = v.iter().map(|o| match o { Out::Enc { clicks, .. } => *clicks, _ => 0 }).collect();
     assert_eq!(clicks, vec![6, 1, -2, -25, -86, -1, -12]);
 }
+
+#[test]
+fn drum_track_keys_press_the_panel_keys_in_auto() {
+    // the MPK's keys go to MIDI IN in auto; on the drum track they press the panel's keys,
+    // and a key held across the change lets go where it went
+    let mut m = Mapper::new(mpk_profile());
+    assert_eq!(m.keys_mode(), KeysMode::Auto);
+    let mut out = Vec::new();
+    m.feed(&[0x90, 60, 40], &mut |o| out.push(o));
+    assert!(matches!(out[..], [Out::Midi { .. }]), "{out:?}");
+    m.set_drums(true);
+    out.clear();
+    m.feed(&[0x90, 62, 40], &mut |o| out.push(o));
+    assert!(matches!(out[..], [Out::Key { down: true, .. }]), "{out:?}");
+    out.clear();
+    m.feed(&[0x80, 60, 0], &mut |o| out.push(o));
+    assert!(matches!(out[..], [Out::Midi { .. }]), "the note held from before ends at MIDI IN: {out:?}");
+    out.clear();
+    m.feed(&[0x80, 62, 0], &mut |o| out.push(o));
+    assert!(matches!(out[..], [Out::Key { down: false, .. }]), "{out:?}");
+    // keys mode MIDI IN stays MIDI IN
+    m.set_keys_mode(KeysMode::Midi, &mut |_| {});
+    out.clear();
+    m.feed(&[0x90, 64, 40], &mut |o| out.push(o));
+    assert!(matches!(out[..], [Out::Midi { .. }]), "{out:?}");
+}
+
+#[test]
+fn firmware_watch_knows_sloop_by_its_bytes_only() {
+    assert_eq!(FirmwareWatch::for_package(b"not a firmware"), None);
+    let w = FirmwareWatch { name: "t", sel: 10, drum: 3, bpm: 20 };
+    let mut ram = [0u8; 32];
+    assert_eq!(w.drums(|a| ram[a as usize]), None, "no tempo yet: still starting");
+    ram[20] = 120;
+    assert_eq!(w.drums(|a| ram[a as usize]), Some(false));
+    ram[10] = 3;
+    assert_eq!(w.drums(|a| ram[a as usize]), Some(true));
+    ram[10] = 9;
+    assert_eq!(w.drums(|a| ram[a as usize]), None);
+}
